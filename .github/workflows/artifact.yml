@@ -1,0 +1,31 @@
+name: Artifacts
+on: [pull_request, workflow_dispatch]
+jobs:
+  test:
+    strategy:
+      matrix:
+        arch: [x86_64]
+        os: [ubuntu-latest, macos-latest, windows-latest]
+      fail-fast: false
+    runs-on: ${{matrix.os}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: 0.13.0
+      - run: |
+          zig build ci --summary all
+      - if: ${{ matrix.os == 'ubuntu-latest'  }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: zipcmdline-archives
+          path: |
+            zig-out/zipcmdline-x86_64-linux.tar.gz
+            zig-out/zipcmdline-x86_64-macos.tar.gz
+            zig-out/zipcmdline-x86_64-windows.zip
+            zig-out/zipcmdline-aarch64-linux.tar.gz
+            zig-out/zipcmdline-aarch64-macos.tar.gz
+            zig-out/zipcmdline-arm-linux.tar.gz
+            zig-out/zipcmdline-riscv64-linux.tar.gz
+            zig-out/zipcmdline-powerpc-linux.tar.gz
+            zig-out/zipcmdline-powerpc64le-linux.tar.gz
