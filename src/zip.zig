@@ -63,31 +63,45 @@ pub fn main() !void {
     var file_entries: std.ArrayListUnmanaged(FileEntry) = .{};
     for (paths_to_include) |path_ptr| {
         const path = std.mem.span(path_ptr);
-        const stat = std.fs.cwd().statFile(path) catch |err| switch (err) {
-            error.FileNotFound => fatal("path '{s}' is not found", .{path}),
-            else => |e| return e,
+
+        const kind: union(enum) { file: usize, directory: void } = blk: {
+            const stat = std.fs.cwd().statFile(path) catch |err| switch (err) {
+                error.FileNotFound => fatal("path '{s}' is not found", .{path}),
+                error.IsDir => break :blk .directory,
+                else => |e| return e,
+            };
+            switch (stat.kind) {
+                .directory => break :blk .directory,
+                .file => break :blk .{ .file = stat.size },
+                .sym_link => fatal("todo: symlinks", .{}),
+                .block_device,
+                .character_device,
+                .named_pipe,
+                .unix_domain_socket,
+                .whiteout,
+                .door,
+                .event_port,
+                .unknown => fatal("file '{s}' is an unsupported type {s}", .{path, @tagName(stat.kind)}),
+            }
         };
-        switch (stat.kind) {
-            .directory => {
-                @panic("todo: directories");
-            },
-            .file => {
+        switch (kind) {
+            .directory => try scanDirectory(
+                arena,
+                &file_entries,
+                path,
+                "",
+                std.fs.cwd(),
+                path,
+            ),
+            .file => |file_size| {
                 if (isBadFilename(path))
                     fatal("filename '{s}' is invalid for zip files", .{path});
                 try file_entries.append(arena, .{
-                    .path = path,
-                    .size = stat.size,
+                    .dir = null,
+                    .zip_path = path,
+                    .size = file_size,
                 });
-            },
-            .sym_link => fatal("todo: symlinks", .{}),
-            .block_device,
-            .character_device,
-            .named_pipe,
-            .unix_domain_socket,
-            .whiteout,
-            .door,
-            .event_port,
-            .unknown => fatal("file '{s}' is an unsupported type {s}", .{path, @tagName(stat.kind)}),
+            }
         }
     }
 
@@ -118,7 +132,7 @@ pub fn main() !void {
                 .crc32 = store[i].crc32,
                 .compressed_size = store[i].compressed_size,
                 .uncompressed_size = @intCast(file.size),
-                .filename_len = @intCast(file.path.len),
+                .filename_len = @intCast(file.zip_path.len),
                 .extra_len = 0,
             };
             try writeStructEndian(zip_file.writer(), hdr, .little);
@@ -127,7 +141,10 @@ pub fn main() !void {
 }
 
 const FileEntry = struct {
-    path: []const u8,
+    // the path the directory containing this file
+    dir: ?[]const u8,
+    // the relative path of the file in the zip archive
+    zip_path: []const u8,
     size: u64,
 };
 
@@ -142,9 +159,16 @@ fn writeZip(
 
         const compression: std.zip.CompressionMethod = .deflate;
 
-        try zipper.writeFileHeader(file_entry.path, compression);
+        try zipper.writeFileHeader(file_entry.zip_path, compression);
 
-        var file = try std.fs.cwd().openFile(file_entry.path, .{});
+        var file = blk: {
+            if (file_entry.dir) |dir| {
+                var entry_dir = try std.fs.cwd().openDir(dir, .{});
+                defer entry_dir.close();
+                break :blk try entry_dir.openFile(file_entry.zip_path, .{});
+            }
+            break :blk try std.fs.cwd().openFile(file_entry.zip_path, .{});
+        };
         defer file.close();
 
         var crc32: u32 = undefined;
@@ -192,11 +216,70 @@ fn writeZip(
     }
     for (file_entries, 0..) |file, i| {
         try zipper.writeCentralRecord(store[i], .{
-            .name = file.path,
+            .name = file.zip_path,
         });
     }
     try zipper.writeEndRecord();
 }
+
+fn joinZipPath(
+    allocator: std.mem.Allocator,
+    parent: []const u8,
+    child: []const u8,
+) ![]const u8{
+    if (parent.len == 0)
+        return allocator.dupe(u8, child);
+    return try std.mem.concat(
+        allocator, u8,  &.{ parent, "/", child }
+    );
+}
+
+fn scanDirectory(
+    allocator: std.mem.Allocator,
+    file_entries: *std.ArrayListUnmanaged(FileEntry),
+    top_level_dir: []const u8,
+    relative_path: []const u8,
+    parent_dir: std.fs.Dir,
+    dir_path: []const u8,
+) !void {
+    var dir = try parent_dir.openDir(dir_path, .{ .iterate = true });
+    defer dir.close();
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        switch (entry.kind) {
+            .directory => {
+                const sub_directory_path = try joinZipPath(
+                    allocator, relative_path, entry.name
+                );
+                defer allocator.free(sub_directory_path);
+                try scanDirectory(
+                    allocator,
+                    file_entries,
+                    top_level_dir,
+                    sub_directory_path,
+                    dir,
+                    entry.name,
+                );
+            },
+            .file => {
+                const file_path = try joinZipPath(allocator, relative_path, entry.name);
+                // don't free, we still need this path
+                if (isBadFilename(file_path)) std.debug.panic(
+                    "unexpected bad filename '{s}'",
+                    .{ file_path },
+                );
+                const stat = try dir.statFile(entry.name);
+                try file_entries.append(allocator, .{
+                    .dir = top_level_dir,
+                    .zip_path = file_path,
+                    .size = stat.size,
+                });
+            },
+            else => |kind| fatal("unsupported file type '{s}'", .{@tagName(kind)}),
+        }
+    }
+}
+
 
 pub fn Crc32Reader(comptime ReaderType: type) type {
     return struct {
