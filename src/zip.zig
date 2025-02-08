@@ -426,43 +426,7 @@ fn writeStructEndian(writer: anytype, value: anytype, endian: std.builtin.Endian
         return writer.writeStruct(value);
     } else {
         var copy = value;
-        byteSwapAllFields(@TypeOf(value), &copy);
+        std.mem.byteSwapAllFields(@TypeOf(value), &copy);
         return writer.writeStruct(copy);
-    }
-}
-pub fn byteSwapAllFields(comptime S: type, ptr: *S) void {
-    switch (@typeInfo(S)) {
-        .Struct => {
-            inline for (std.meta.fields(S)) |f| {
-                switch (@typeInfo(f.type)) {
-                    .Struct => |struct_info| if (struct_info.backing_integer) |Int| {
-                        @field(ptr, f.name) = @bitCast(@byteSwap(@as(Int, @bitCast(@field(ptr, f.name)))));
-                    } else {
-                        byteSwapAllFields(f.type, &@field(ptr, f.name));
-                    },
-                    .Array => byteSwapAllFields(f.type, &@field(ptr, f.name)),
-                    .Enum => {
-                        @field(ptr, f.name) = @enumFromInt(@byteSwap(@intFromEnum(@field(ptr, f.name))));
-                    },
-                    else => {
-                        @field(ptr, f.name) = @byteSwap(@field(ptr, f.name));
-                    },
-                }
-            }
-        },
-        .Array => {
-            for (ptr) |*item| {
-                switch (@typeInfo(@TypeOf(item.*))) {
-                    .Struct, .Array => byteSwapAllFields(@TypeOf(item.*), item),
-                    .Enum => {
-                        item.* = @enumFromInt(@byteSwap(@intFromEnum(item.*)));
-                    },
-                    else => {
-                        item.* = @byteSwap(item.*);
-                    },
-                }
-            }
-        },
-        else => @compileError("byteSwapAllFields expects a struct or array as the first argument"),
     }
 }
