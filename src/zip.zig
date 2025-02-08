@@ -17,7 +17,9 @@ fn usage() noreturn {
 }
 
 var windows_args_arena = if (builtin.os.tag == .windows)
-    std.heap.ArenaAllocator.init(std.heap.page_allocator) else struct{}{};
+    std.heap.ArenaAllocator.init(std.heap.page_allocator)
+else
+    struct {}{};
 pub fn cmdlineArgs() [][*:0]u8 {
     if (builtin.os.tag == .windows) {
         const slices = std.process.argsAlloc(windows_args_arena.allocator()) catch |err| switch (err) {
@@ -31,7 +33,7 @@ pub fn cmdlineArgs() [][*:0]u8 {
         }
         return args;
     }
-    return std.os.argv.ptr[1 .. std.os.argv.len];
+    return std.os.argv.ptr[1..std.os.argv.len];
 }
 
 pub fn main() !void {
@@ -52,7 +54,7 @@ pub fn main() !void {
                 fatal("unknown cmdline option '{s}'", .{arg});
             }
         }
-        break :blk cmd_args[0 .. non_option_len];
+        break :blk cmd_args[0..non_option_len];
     };
 
     if (cmd_args.len < 2) usage();
@@ -81,7 +83,8 @@ pub fn main() !void {
                 .whiteout,
                 .door,
                 .event_port,
-                .unknown => fatal("file '{s}' is an unsupported type {s}", .{path, @tagName(stat.kind)}),
+                .unknown,
+                => fatal("file '{s}' is an unsupported type {s}", .{ path, @tagName(stat.kind) }),
             }
         };
         switch (kind) {
@@ -101,7 +104,7 @@ pub fn main() !void {
                     .zip_path = path,
                     .size = file_size,
                 });
-            }
+            },
         }
     }
 
@@ -110,7 +113,7 @@ pub fn main() !void {
 
     {
         const zip_file = std.fs.cwd().createFile(zip_file_arg, .{}) catch |err|
-            fatal("create file '{s}' failed: {s}", .{zip_file_arg, @errorName(err)});
+            fatal("create file '{s}' failed: {s}", .{ zip_file_arg, @errorName(err) });
         defer zip_file.close();
         try writeZip(zip_file, file_entries.items, store);
     }
@@ -118,7 +121,7 @@ pub fn main() !void {
     // go fix up the local file headers
     {
         const zip_file = std.fs.cwd().openFile(zip_file_arg, .{ .mode = .read_write }) catch |err|
-            fatal("open file '{s}' failed: {s}", .{zip_file_arg, @errorName(err)});
+            fatal("open file '{s}' failed: {s}", .{ zip_file_arg, @errorName(err) });
         defer zip_file.close();
         for (file_entries.items, 0..) |file, i| {
             try zip_file.seekTo(store[i].file_offset);
@@ -180,7 +183,7 @@ fn writeZip(
                 var full_rw_buf: [std.mem.page_size]u8 = undefined;
                 var remaining = file_entry.size;
                 while (remaining > 0) {
-                    const buf = full_rw_buf[0 .. @min(remaining, full_rw_buf.len)];
+                    const buf = full_rw_buf[0..@min(remaining, full_rw_buf.len)];
                     const read_len = try file.reader().read(buf);
                     std.debug.assert(read_len == buf.len);
                     hash.update(buf);
@@ -226,12 +229,10 @@ fn joinZipPath(
     allocator: std.mem.Allocator,
     parent: []const u8,
     child: []const u8,
-) ![]const u8{
+) ![]const u8 {
     if (parent.len == 0)
         return allocator.dupe(u8, child);
-    return try std.mem.concat(
-        allocator, u8,  &.{ parent, "/", child }
-    );
+    return try std.mem.concat(allocator, u8, &.{ parent, "/", child });
 }
 
 fn scanDirectory(
@@ -248,9 +249,7 @@ fn scanDirectory(
     while (try it.next()) |entry| {
         switch (entry.kind) {
             .directory => {
-                const sub_directory_path = try joinZipPath(
-                    allocator, relative_path, entry.name
-                );
+                const sub_directory_path = try joinZipPath(allocator, relative_path, entry.name);
                 defer allocator.free(sub_directory_path);
                 try scanDirectory(
                     allocator,
@@ -266,7 +265,7 @@ fn scanDirectory(
                 // don't free, we still need this path
                 if (isBadFilename(file_path)) std.debug.panic(
                     "unexpected bad filename '{s}'",
-                    .{ file_path },
+                    .{file_path},
                 );
                 const stat = try dir.statFile(entry.name);
                 try file_entries.append(allocator, .{
@@ -279,7 +278,6 @@ fn scanDirectory(
         }
     }
 }
-
 
 pub fn Crc32Reader(comptime ReaderType: type) type {
     return struct {
@@ -302,7 +300,6 @@ pub fn Crc32Reader(comptime ReaderType: type) type {
         }
     };
 }
-
 
 fn isBadFilename(filename: []const u8) bool {
     if (std.mem.indexOfScalar(u8, filename, '\\')) |_|
