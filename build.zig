@@ -9,7 +9,7 @@ pub fn build(b: *std.Build) !void {
     const host_zip_exe = b.addExecutable(.{
         .name = "zip",
         .root_source_file = b.path("src/zip.zig"),
-        .target = b.host,
+        .target = b.graph.host,
         .optimize = .Debug,
     });
 
@@ -63,7 +63,7 @@ fn ci(
     ci_step.dependOn(make_archive_step);
 
     for (ci_targets) |ci_target_str| {
-        const target = b.resolveTargetQuery(try std.zig.CrossTarget.parse(
+        const target = b.resolveTargetQuery(try std.Target.Query.parse(
             .{ .arch_os_abi = ci_target_str },
         ));
         const optimize: std.builtin.OptimizeMode = .ReleaseSafe;
