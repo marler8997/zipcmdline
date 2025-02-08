@@ -64,7 +64,7 @@ pub fn main() !void {
     for (paths_to_include) |path_ptr| {
         const path = std.mem.span(path_ptr);
 
-        const kind: union(enum) { file: usize, directory: void } = blk: {
+        const kind: union(enum) { file: u64, directory: void } = blk: {
             const stat = std.fs.cwd().statFile(path) catch |err| switch (err) {
                 error.FileNotFound => fatal("path '{s}' is not found", .{path}),
                 error.IsDir => break :blk .directory,
