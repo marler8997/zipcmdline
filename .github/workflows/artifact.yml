@@ -20,11 +20,16 @@ jobs:
         with:
           name: zipcmdline-archives
           path: |
+            zig-out/x86_64-windows/unzip.exe
+            zig-out/x86_64-windows/unzip.pdb
+            zig-out/aarch64-windows/unzip.exe
+            zig-out/aarch64-windows/unzip.exe
             zig-out/zipcmdline-x86_64-linux.tar.gz
             zig-out/zipcmdline-x86_64-macos.tar.gz
             zig-out/zipcmdline-x86_64-windows.zip
             zig-out/zipcmdline-aarch64-linux.tar.gz
             zig-out/zipcmdline-aarch64-macos.tar.gz
+            zig-out/zipcmdline-aarch64-windows.zip
             zig-out/zipcmdline-arm-linux.tar.gz
             zig-out/zipcmdline-riscv64-linux.tar.gz
             zig-out/zipcmdline-powerpc-linux.tar.gz
