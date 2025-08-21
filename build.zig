@@ -8,9 +8,11 @@ pub fn build(b: *std.Build) !void {
 
     const host_zip_exe = b.addExecutable(.{
         .name = "zip",
-        .root_source_file = b.path("src/zip.zig"),
-        .target = b.graph.host,
-        .optimize = .Debug,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/zip.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
     });
 
     const ci_step = b.step("ci", "The build/test step to run on the CI");
@@ -26,9 +28,11 @@ fn addExe(
 ) *std.Build.Step.Compile {
     const exe = b.addExecutable(.{
         .name = name,
-        .root_source_file = b.path("src/" ++ name ++ ".zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/" ++ name ++ ".zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     b.installArtifact(exe);
 
@@ -70,15 +74,19 @@ fn ci(
         const optimize: std.builtin.OptimizeMode = .ReleaseSafe;
         const zip_exe = b.addExecutable(.{
             .name = "zip",
-            .root_source_file = b.path("src/zip.zig"),
-            .target = target,
-            .optimize = optimize,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/zip.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
         });
         const unzip_exe = b.addExecutable(.{
             .name = "unzip",
-            .root_source_file = b.path("src/unzip.zig"),
-            .target = target,
-            .optimize = optimize,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/unzip.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
         });
         const zip_exe_install = b.addInstallArtifact(zip_exe, .{
             .dest_dir = .{ .override = .{ .custom = ci_target_str } },
