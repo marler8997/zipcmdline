@@ -1,10 +1,11 @@
 const std = @import("std");
+const TestCase = @import("test/cases.zig").TestCase;
 
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    _ = addExe(b, target, optimize, "zip");
-    _ = addExe(b, target, optimize, "unzip");
+    const zip_exe = addExe(b, target, optimize, "zip");
+    const unzip_exe = addExe(b, target, optimize, "unzip");
 
     const host_zip_exe = b.addExecutable(.{
         .name = "zip",
@@ -15,8 +16,12 @@ pub fn build(b: *std.Build) !void {
         }),
     });
 
+    const test_step = b.step("test", "Run all tests");
+    addTests(b, zip_exe, unzip_exe, test_step);
+
     const ci_step = b.step("ci", "The build/test step to run on the CI");
     ci_step.dependOn(b.getInstallStep());
+    ci_step.dependOn(test_step);
     try ci(b, ci_step, host_zip_exe);
 }
 
@@ -44,6 +49,33 @@ fn addExe(
     const run_step = b.step(name, "Run " ++ name);
     run_step.dependOn(&run_cmd.step);
     return exe;
+}
+
+fn addTests(
+    b: *std.Build,
+    zip_exe: *std.Build.Step.Compile,
+    unzip_exe: *std.Build.Step.Compile,
+    test_step: *std.Build.Step,
+) void {
+    const test_runner = b.addExecutable(.{
+        .name = "test_runner",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/runner.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    inline for (std.meta.fields(TestCase)) |field| {
+        const case: TestCase = @enumFromInt(field.value);
+        const run = b.addRunArtifact(test_runner);
+        run.setName(@tagName(case));
+        run.addArg(@tagName(case));
+        run.addArtifactArg(zip_exe);
+        run.addArtifactArg(unzip_exe);
+        run.addCheck(.{ .expect_term = .{ .Exited = 0 } });
+        test_step.dependOn(&run.step);
+        b.step("test-" ++ @tagName(case), "").dependOn(&run.step);
+    }
 }
 
 fn ci(
