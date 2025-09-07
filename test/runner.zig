@@ -137,12 +137,12 @@ fn testFiles(
     defer allocator.free(archive_zip);
 
     {
-        var zip_args = std.ArrayList([]const u8).init(allocator);
-        defer zip_args.deinit();
-        try zip_args.append(zip_exe);
-        try zip_args.append(archive_zip);
+        var zip_args: std.ArrayList([]const u8) = .{};
+        defer zip_args.deinit(allocator);
+        try zip_args.append(allocator, zip_exe);
+        try zip_args.append(allocator, archive_zip);
         for (files) |file| {
-            try zip_args.append(file.sub_path);
+            try zip_args.append(allocator, file.sub_path);
         }
         const result = try runCommand(allocator, zip_args.items, .{});
         defer allocator.free(result.stdout);
@@ -188,9 +188,9 @@ fn runCommand(allocator: std.mem.Allocator, argv: []const []const u8, opt: struc
         .allocator = allocator,
         .argv = argv,
     });
-    try std.io.getStdOut().writer().writeAll(result.stdout);
+    try std.fs.File.stdout().writeAll(result.stdout);
     if (!opt.suppress_stderr) {
-        try std.io.getStdErr().writer().writeAll(result.stderr);
+        try std.fs.File.stderr().writeAll(result.stderr);
     }
     return result;
 }

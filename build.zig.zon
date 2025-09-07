@@ -2,7 +2,7 @@
     .name = .zipcmdline,
     .fingerprint = 0xcca72bd3d3a2580c,
     .version = "0.0.0",
-    .minimum_zig_version = "0.14.0",
+    .minimum_zig_version = "0.15.1",
     .paths = .{
         "build.zig",
         "build.zig.zon",
