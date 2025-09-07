@@ -9,11 +9,10 @@ fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
     std.process.exit(0xff);
 }
 
-fn usage() noreturn {
-    std.io.getStdErr().writer().writeAll(
+fn usage() !void {
+    try std.io.getStdErr().writer().writeAll(
         "Usage: zip [-options] ZIP_FILE FILES/DIRS..\n",
-    ) catch |e| @panic(@errorName(e));
-    std.process.exit(1);
+    );
 }
 
 var windows_args_arena = if (builtin.os.tag == .windows)
@@ -57,7 +56,10 @@ pub fn main() !void {
         break :blk cmd_args[0..non_option_len];
     };
 
-    if (cmd_args.len < 2) usage();
+    if (cmd_args.len < 2) {
+        try usage();
+        std.process.exit(0xff);
+    }
     const zip_file_arg = std.mem.span(cmd_args[0]);
     const paths_to_include = cmd_args[1..];
 

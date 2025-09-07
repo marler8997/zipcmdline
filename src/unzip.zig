@@ -9,9 +9,8 @@ fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
     std.process.exit(0xff);
 }
 
-fn usage() noreturn {
-    std.io.getStdErr().writer().print("Usage: unzip [-d DIR] ZIP_FILE\n", .{}) catch |e| @panic(@errorName(e));
-    std.process.exit(1);
+fn usage() !void {
+    try std.io.getStdErr().writer().writeAll("Usage: unzip [-d DIR] ZIP_FILE\n");
 }
 
 var windows_args_arena = if (builtin.os.tag == .windows)
@@ -60,7 +59,10 @@ pub fn main() !void {
         break :blk cmd_args[0..non_option_len];
     };
 
-    if (cmd_args.len != 1) usage();
+    if (cmd_args.len != 1) {
+        try usage();
+        std.process.exit(0xff);
+    }
     const zip_file_arg = std.mem.span(cmd_args[0]);
 
     var out_dir = blk: {
