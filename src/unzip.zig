@@ -10,7 +10,7 @@ fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
 }
 
 fn usage() !void {
-    try std.io.getStdErr().writer().writeAll("Usage: unzip [-d DIR] ZIP_FILE\n");
+    try std.fs.File.stderr().writeAll("Usage: unzip [-d DIR] ZIP_FILE\n");
 }
 
 var windows_args_arena = if (builtin.os.tag == .windows)
@@ -82,7 +82,9 @@ pub fn main() !void {
     const zip_file = std.fs.cwd().openFile(zip_file_arg, .{}) catch |err|
         fatal("open '{s}' failed: {s}", .{ zip_file_arg, @errorName(err) });
     defer zip_file.close();
-    try std.zip.extract(out_dir, zip_file.seekableStream(), .{
+    var buffer: [4096]u8 = undefined;
+    var reader = zip_file.reader(&buffer);
+    try std.zip.extract(out_dir, &reader, .{
         .allow_backslashes = true,
     });
 }
