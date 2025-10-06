@@ -68,7 +68,13 @@ pub fn main() !void {
         },
         .@"binary-file" => {
             var binary_data: [5000]u8 = undefined;
-            std.crypto.random.bytes(&binary_data);
+
+            {
+                var prng = std.Random.DefaultPrng.init(0x12345678);
+                const random = prng.random();
+                random.bytes(&binary_data);
+            }
+
             const binary_path = test_case.allocPath(allocator, "binary.dat");
             defer allocator.free(binary_path);
             try testFiles(allocator, test_path, zip_exe, unzip_exe, &[_]File{
@@ -111,6 +117,37 @@ pub fn main() !void {
             defer allocator.free(unzip_result.stdout);
             defer allocator.free(unzip_result.stderr);
             try std.testing.expect(unzip_result.term != .Exited or unzip_result.term.Exited != 0);
+        },
+        .@"buffer-stress" => {
+            // Test with specific patterns that could expose buffer corruption
+            // if the same buffer is being used incorrectly by both readers
+
+            const pattern_size = 4096 * 10;
+            const pattern_data = try allocator.alloc(u8, pattern_size);
+            defer allocator.free(pattern_data);
+
+            {
+                var prng = std.Random.DefaultPrng.init(0x12345678);
+                const random = prng.random();
+                random.bytes(pattern_data);
+            }
+
+            // Create multiple files with different sizes to stress the buffer
+            const files = [_]File{
+                // Small file that fits in buffer
+                .{ .sub_path = test_case.allocPath(allocator, "small.dat"), .data = pattern_data[0..1024] },
+                // File exactly matching buffer size
+                .{ .sub_path = test_case.allocPath(allocator, "exact.dat"), .data = pattern_data[0..4096] },
+                // File slightly larger than buffer
+                .{ .sub_path = test_case.allocPath(allocator, "larger.dat"), .data = pattern_data[0..4097] },
+                // Large file requiring multiple buffer fills
+                .{ .sub_path = test_case.allocPath(allocator, "large.dat"), .data = pattern_data },
+                // Prime-sized file to avoid alignment
+                .{ .sub_path = test_case.allocPath(allocator, "prime.dat"), .data = pattern_data[0..5003] },
+            };
+            defer for (files) |file| allocator.free(file.sub_path);
+
+            try testFiles(allocator, test_path, zip_exe, unzip_exe, &files);
         },
     }
 }
