@@ -1,6 +1,6 @@
 const builtin = @import("builtin");
 const std = @import("std");
-const deflate = @import("std/deflate.zig");
+const flate = @import("std/flate.zig");
 
 fn oom(e: error{OutOfMemory}) noreturn {
     @panic(@errorName(e));
@@ -162,7 +162,8 @@ fn writeZip(
     file_entries: []const FileEntry,
     store: []FileStore,
 ) !void {
-    var zipper: Zipper = .init(writer);
+    var zipper_buffer: [4096]u8 = undefined;
+    var zipper: Zipper = .init(writer, &zipper_buffer);
 
     for (file_entries, 0..) |file_entry, i| {
         const file_offset = zipper.getBytesWritten();
@@ -203,21 +204,43 @@ fn writeZip(
                 var read_buffer: [4096]u8 = undefined;
                 var reader = Crc32Reader.init(&read_buffer, file);
 
-                try deflate.compress(
-                    .raw,
-                    &reader.interface,
+                // NOTE: this is the old API
+                // try deflate.compress(
+                //     .raw,
+                //     &reader.interface,
+                //     &zipper.writer,
+                //     .{ .level = .best },
+                // );
+                var flate_buf: [flate.max_window_len]u8 = undefined;
+                // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+                std.debug.print("compress: init\n", .{});
+                var compressor = try flate.Compress.init(
                     &zipper.writer,
-                    .{ .level = .best },
+                    &flate_buf,
+                    .raw,
+                    flate.Compress.Options.default,
                 );
+                std.debug.print("compress: init done\n", .{});
 
-                {
-                    var one_byte: [1]u8 = undefined;
-                    if (reader.interface.readSliceShort(&one_byte)) |len| {
-                        if (len != 0) fatal("deflate compressor didn't read all data", .{});
-                    } else |err| switch (err) {
-                        error.ReadFailed => fatal("deflate compressor didn't read all the data and then we got a read error", .{}),
-                    }
+                while (true) {
+                    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+                    var tmp_buf: [4096]u8 = undefined;
+                    std.debug.print("compress: read...\n", .{});
+                    const bytes_read = try reader.interface.readSliceShort(&tmp_buf);
+                    if (bytes_read == 0) break;
+                    std.debug.print("compress: read {} bytes\n", .{bytes_read});
+                    try compressor.writer.writeAll(tmp_buf[0..bytes_read]);
                 }
+                try compressor.writer.flush();
+
+                // {
+                //     var one_byte: [1]u8 = undefined;
+                //     if (reader.interface.readSliceShort(&one_byte)) |len| {
+                //         if (len != 0) fatal("deflate compressor didn't read all data", .{});
+                //     } else |err| switch (err) {
+                //         error.ReadFailed => fatal("deflate compressor didn't read all the data and then we got a read error", .{}),
+                //     }
+                // }
 
                 compressed_size = zipper.getBytesWritten() - start_offset;
                 crc32 = reader.crc32.final();
@@ -318,9 +341,11 @@ const Crc32Reader = struct {
         const self: *Crc32Reader = @alignCast(@fieldParentPtr("interface", r));
         const dest = limit.slice(try w.writableSliceGreedy(1));
         if (dest.len == 0) return 0;
+        std.debug.print("reading {} bytes from file...\n", .{dest.len});
         const n = self.file.read(dest) catch |err| switch (err) {
             else => return error.ReadFailed,
         };
+        std.debug.print("read {} bytes\n", .{n});
         if (n == 0) return error.EndOfStream;
         self.crc32.update(dest[0..n]);
         w.advance(n);
@@ -376,9 +401,9 @@ const Zipper = struct {
 
     const Self = @This();
 
-    pub fn init(underlying_writer: *std.Io.Writer) Zipper {
+    pub fn init(underlying_writer: *std.Io.Writer, write_buffer: []u8) Zipper {
         return .{
-            .writer = .{ .vtable = &vtable, .buffer = &.{} },
+            .writer = .{ .vtable = &vtable, .buffer = write_buffer },
             .underlying_writer = underlying_writer,
         };
     }
@@ -386,7 +411,7 @@ const Zipper = struct {
     const vtable: std.Io.Writer.VTable = .{
         .drain = drain,
         .sendFile = sendFile,
-        .rebase = rebase,
+        // .rebase = rebase,
     };
 
     fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
@@ -408,12 +433,12 @@ const Zipper = struct {
         _ = limit;
         @panic("todo");
     }
-    fn rebase(w: *std.Io.Writer, preserve: usize, capacity: usize) std.Io.Writer.Error!void {
-        _ = w;
-        _ = preserve;
-        _ = capacity;
-        @panic("todo");
-    }
+    // fn rebase(w: *std.Io.Writer, preserve: usize, capacity: usize) std.Io.Writer.Error!void {
+    //     _ = w;
+    //     _ = preserve;
+    //     _ = capacity;
+    //     @panic("todo");
+    // }
 
     pub fn getBytesWritten(self: *Self) u64 {
         return self.writer.end + self.bytes_written;
