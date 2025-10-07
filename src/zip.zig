@@ -297,13 +297,13 @@ fn scanDirectory(
 
 const Crc32Reader = struct {
     interface: std.Io.Reader,
-    file_reader: std.fs.File.Reader,
+    file: std.fs.File,
     crc32: std.hash.Crc32 = std.hash.Crc32.init(),
 
     pub fn init(buffer: []u8, file: std.fs.File) Crc32Reader {
         return .{
             .interface = .{ .vtable = &vtable, .buffer = buffer, .seek = 0, .end = 0 },
-            .file_reader = file.reader(buffer),
+            .file = file,
             .crc32 = std.hash.Crc32.init(),
         };
     }
@@ -311,32 +311,25 @@ const Crc32Reader = struct {
     const vtable: std.Io.Reader.VTable = .{
         .stream = stream,
         .discard = discard,
-        .readVec = readVec,
         .rebase = rebase,
     };
 
     fn stream(r: *std.Io.Reader, w: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
-        _ = r;
-        _ = w;
-        _ = limit;
-        @panic("not implemented");
+        const self: *Crc32Reader = @alignCast(@fieldParentPtr("interface", r));
+        const dest = limit.slice(try w.writableSliceGreedy(1));
+        if (dest.len == 0) return 0;
+        const n = self.file.read(dest) catch |err| switch (err) {
+            else => return error.ReadFailed,
+        };
+        if (n == 0) return error.EndOfStream;
+        self.crc32.update(dest[0..n]);
+        w.advance(n);
+        return n;
     }
     fn discard(r: *std.Io.Reader, limit: std.Io.Limit) std.Io.Reader.Error!usize {
         _ = r;
         _ = limit;
         @panic("not implemented");
-    }
-    fn readVec(r: *std.Io.Reader, data: [][]u8) std.Io.Reader.Error!usize {
-        const self: *Crc32Reader = @alignCast(@fieldParentPtr("interface", r));
-        const len = try self.file_reader.interface.readVec(data);
-        var bytes_remaining = len;
-        var data_index: usize = 0;
-        while (bytes_remaining != 0) : (data_index += 1) {
-            const next_hash_len = @min(bytes_remaining, data[data_index].len);
-            self.crc32.update(data[data_index][0..next_hash_len]);
-            bytes_remaining -= next_hash_len;
-        }
-        return len;
     }
     fn rebase(r: *std.Io.Reader, capacity: usize) std.Io.Reader.RebaseError!void {
         _ = r;
