@@ -1,6 +1,5 @@
 const builtin = @import("builtin");
 const std = @import("std");
-const deflate = @import("std/deflate.zig");
 
 fn oom(e: error{OutOfMemory}) noreturn {
     @panic(@errorName(e));
@@ -118,9 +117,10 @@ pub fn main() !void {
         const zip_file = std.fs.cwd().createFile(zip_file_arg, .{}) catch |err|
             fatal("create file '{s}' failed: {s}", .{ zip_file_arg, @errorName(err) });
         defer zip_file.close();
-        var writer = zip_file.writer(&.{});
-        try writeZip(&writer.interface, file_entries.items, store);
-        try writer.interface.flush();
+        var file_buffer: [9]u8 = undefined;
+        var file_writer = zip_file.writer(&file_buffer);
+        try writeZip(&file_writer, file_entries.items, store);
+        try file_writer.interface.flush();
     }
 
     // go fix up the local file headers
@@ -158,17 +158,23 @@ const FileEntry = struct {
 };
 
 fn writeZip(
-    writer: *std.Io.Writer,
+    file_writer: *std.fs.File.Writer,
     file_entries: []const FileEntry,
     store: []FileStore,
 ) !void {
-    var zipper: Zipper = .init(writer);
+    var first_central_offset: ?u64 = null;
+    var cd_count: u64 = 0;
 
     for (file_entries, 0..) |file_entry, i| {
-        const file_offset = zipper.getBytesWritten();
+        const file_offset = file_writer.pos + file_writer.interface.buffered().len;
         const compression: std.zip.CompressionMethod = .deflate;
 
-        try zipper.writeFileHeader(file_entry.zip_path, compression);
+        try writeFileHeader(&file_writer.interface, file_entry.zip_path, compression);
+
+        {
+            const after_file_header = file_writer.pos + file_writer.interface.buffered().len;
+            std.debug.assert(@sizeOf(std.zip.LocalFileHeader) + file_entry.zip_path.len == after_file_header - file_offset);
+        }
 
         var file = blk: {
             if (file_entry.dir) |dir| {
@@ -185,41 +191,37 @@ fn writeZip(
         var compressed_size = file_entry.size;
         switch (compression) {
             .store => {
-                var hash = std.hash.Crc32.init();
-                var full_rw_buf: [std.mem.page_size]u8 = undefined;
-                var remaining = file_entry.size;
-                while (remaining > 0) {
-                    const buf = full_rw_buf[0..@min(remaining, full_rw_buf.len)];
-                    const read_len = try file.reader().read(buf);
-                    std.debug.assert(read_len == buf.len);
-                    hash.update(buf);
-                    try zipper.counting_writer.writer().writeAll(buf);
-                    remaining -= buf.len;
-                }
-                crc32 = hash.final();
+                comptime unreachable;
+                // var hash = std.hash.Crc32.init();
+                // var full_rw_buf: [std.mem.page_size]u8 = undefined;
+                // var remaining = file_entry.size;
+                // while (remaining > 0) {
+                //     const buf = full_rw_buf[0..@min(remaining, full_rw_buf.len)];
+                //     const read_len = try file.reader().read(buf);
+                //     std.debug.assert(read_len == buf.len);
+                //     hash.update(buf);
+                //     try zipper.counting_writer.writer().writeAll(buf);
+                //     remaining -= buf.len;
+                // }
+                // crc32 = hash.final();
             },
             .deflate => {
-                const start_offset = zipper.getBytesWritten();
+                const start_offset = file_writer.pos + file_writer.interface.buffered().len;
                 var read_buffer: [4096]u8 = undefined;
                 var reader = Crc32Reader.init(&read_buffer, file);
 
-                try deflate.compress(
+                var compress_buffer: [std.compress.flate.max_window_len]u8 = undefined;
+                var compressor: @import("backport").compress.flate.Compress = try .init(
+                    &file_writer.interface,
+                    &compress_buffer,
                     .raw,
-                    &reader.interface,
-                    &zipper.writer,
-                    .{ .level = .best },
+                    .best,
                 );
-
-                {
-                    var one_byte: [1]u8 = undefined;
-                    if (reader.interface.readSliceShort(&one_byte)) |len| {
-                        if (len != 0) fatal("deflate compressor didn't read all data", .{});
-                    } else |err| switch (err) {
-                        error.ReadFailed => fatal("deflate compressor didn't read all the data and then we got a read error", .{}),
-                    }
-                }
-
-                compressed_size = zipper.getBytesWritten() - start_offset;
+                const written = try reader.interface.streamRemaining(&compressor.writer);
+                std.debug.assert(written == file_entry.size);
+                try compressor.writer.flush();
+                const end_offset = file_writer.pos + file_writer.interface.buffered().len;
+                compressed_size = end_offset - start_offset;
                 crc32 = reader.crc32.final();
             },
             else => @panic("codebug"),
@@ -233,12 +235,24 @@ fn writeZip(
         };
     }
     for (file_entries, 0..) |file, i| {
-        try zipper.writeCentralRecord(store[i], .{
-            .name = file.zip_path,
-        });
+        if (first_central_offset == null) {
+            first_central_offset = file_writer.pos + file_writer.interface.buffered().len;
+        }
+        try writeCentralRecord(
+            &file_writer.interface,
+            store[i],
+            .{
+                .name = file.zip_path,
+            },
+        );
+        cd_count += 1;
     }
-    try zipper.writeEndRecord();
-    try zipper.writer.flush();
+    const cd_offset: u64, const cd_size: u64 = if (first_central_offset) |offset|
+        .{ offset, file_writer.pos + file_writer.interface.buffered().len - offset }
+    else
+        .{ 0, 0 };
+    try writeEndRecord(&file_writer.interface, cd_count, cd_offset, cd_size);
+    try file_writer.interface.flush();
 }
 
 fn joinZipPath(
@@ -364,137 +378,74 @@ pub const FileStore = struct {
     compressed_size: u32,
 };
 
-const Zipper = struct {
-    writer: std.Io.Writer,
-    underlying_writer: *std.Io.Writer,
-
-    bytes_written: u64 = 0,
-
-    central_count: u64 = 0,
-    first_central_offset: ?u64 = null,
-    last_central_limit: ?u64 = null,
-
-    const Self = @This();
-
-    pub fn init(underlying_writer: *std.Io.Writer) Zipper {
-        return .{
-            .writer = .{ .vtable = &vtable, .buffer = &.{} },
-            .underlying_writer = underlying_writer,
-        };
-    }
-
-    const vtable: std.Io.Writer.VTable = .{
-        .drain = drain,
-        .sendFile = sendFile,
-        .rebase = rebase,
+fn writeFileHeader(
+    writer: *std.Io.Writer,
+    name: []const u8,
+    compression: std.zip.CompressionMethod,
+) error{WriteFailed}!void {
+    const hdr: std.zip.LocalFileHeader = .{
+        .signature = std.zip.local_file_header_sig,
+        .version_needed_to_extract = 10,
+        .flags = .{ .encrypted = false, ._ = 0 },
+        .compression_method = compression,
+        .last_modification_time = 0,
+        .last_modification_date = 0,
+        .crc32 = 0,
+        .compressed_size = 0,
+        .uncompressed_size = 0,
+        .filename_len = @intCast(name.len),
+        .extra_len = 0,
     };
+    try writer.writeStruct(hdr, .little);
+    try writer.writeAll(name);
+}
 
-    fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
-        const self: *Zipper = @alignCast(@fieldParentPtr("writer", w));
-        const written = try self.underlying_writer.writeSplat(data, splat);
-        self.bytes_written += written;
-        return written;
-    }
-    fn sendFile(
-        w: *std.Io.Writer,
-        file_reader: *std.fs.File.Reader,
-        /// Maximum amount of bytes to read from the file. Implementations may
-        /// assume that the file size does not exceed this amount. Data from
-        /// `buffer` does not count towards this limit.
-        limit: std.Io.Limit,
-    ) std.Io.Writer.FileError!usize {
-        _ = w;
-        _ = file_reader;
-        _ = limit;
-        @panic("todo");
-    }
-    fn rebase(w: *std.Io.Writer, preserve: usize, capacity: usize) std.Io.Writer.Error!void {
-        _ = w;
-        _ = preserve;
-        _ = capacity;
-        @panic("todo");
-    }
-
-    pub fn getBytesWritten(self: *Self) u64 {
-        return self.writer.end + self.bytes_written;
-    }
-
-    pub fn writeFileHeader(
-        self: *Self,
+fn writeCentralRecord(
+    writer: *std.Io.Writer,
+    store: FileStore,
+    opt: struct {
         name: []const u8,
-        compression: std.zip.CompressionMethod,
-    ) !void {
-        const hdr: std.zip.LocalFileHeader = .{
-            .signature = std.zip.local_file_header_sig,
-            .version_needed_to_extract = 10,
-            .flags = .{ .encrypted = false, ._ = 0 },
-            .compression_method = compression,
-            .last_modification_time = 0,
-            .last_modification_date = 0,
-            .crc32 = 0,
-            .compressed_size = 0,
-            .uncompressed_size = 0,
-            .filename_len = @intCast(name.len),
-            .extra_len = 0,
-        };
-        try self.writer.writeStruct(hdr, .little);
-        try self.writer.writeAll(name);
-    }
+        version_needed_to_extract: u16 = 10,
+    },
+) error{WriteFailed}!void {
+    const hdr: std.zip.CentralDirectoryFileHeader = .{
+        .signature = std.zip.central_file_header_sig,
+        .version_made_by = 0,
+        .version_needed_to_extract = opt.version_needed_to_extract,
+        .flags = .{ .encrypted = false, ._ = 0 },
+        .compression_method = store.compression,
+        .last_modification_time = 0,
+        .last_modification_date = 0,
+        .crc32 = store.crc32,
+        .compressed_size = store.compressed_size,
+        .uncompressed_size = @intCast(store.uncompressed_size),
+        .filename_len = @intCast(opt.name.len),
+        .extra_len = 0,
+        .comment_len = 0,
+        .disk_number = 0,
+        .internal_file_attributes = 0,
+        .external_file_attributes = 0,
+        .local_file_header_offset = @intCast(store.file_offset),
+    };
+    try writer.writeStruct(hdr, .little);
+    try writer.writeAll(opt.name);
+}
 
-    pub fn writeCentralRecord(
-        self: *Self,
-        store: FileStore,
-        opt: struct {
-            name: []const u8,
-            version_needed_to_extract: u16 = 10,
-        },
-    ) !void {
-        if (self.first_central_offset == null) {
-            self.first_central_offset = self.getBytesWritten();
-        }
-        self.central_count += 1;
-
-        const hdr: std.zip.CentralDirectoryFileHeader = .{
-            .signature = std.zip.central_file_header_sig,
-            .version_made_by = 0,
-            .version_needed_to_extract = opt.version_needed_to_extract,
-            .flags = .{ .encrypted = false, ._ = 0 },
-            .compression_method = store.compression,
-            .last_modification_time = 0,
-            .last_modification_date = 0,
-            .crc32 = store.crc32,
-            .compressed_size = store.compressed_size,
-            .uncompressed_size = @intCast(store.uncompressed_size),
-            .filename_len = @intCast(opt.name.len),
-            .extra_len = 0,
-            .comment_len = 0,
-            .disk_number = 0,
-            .internal_file_attributes = 0,
-            .external_file_attributes = 0,
-            .local_file_header_offset = @intCast(store.file_offset),
-        };
-        try self.writer.writeStruct(hdr, .little);
-        try self.writer.writeAll(opt.name);
-        self.last_central_limit = self.getBytesWritten();
-    }
-
-    pub fn writeEndRecord(self: *Self) !void {
-        const cd_offset = self.first_central_offset orelse 0;
-        const cd_end = self.last_central_limit orelse 0;
-        const hdr: std.zip.EndRecord = .{
-            .signature = std.zip.end_record_sig,
-            .disk_number = 0,
-            .central_directory_disk_number = 0,
-            .record_count_disk = @intCast(self.central_count),
-            .record_count_total = @intCast(self.central_count),
-            .central_directory_size = @intCast(cd_end - cd_offset),
-            .central_directory_offset = @intCast(cd_offset),
-            .comment_len = 0,
-        };
-        try self.writer.writeStruct(hdr, .little);
-    }
-};
-
-fn fileWriterBytesWritten(comptime T: type, writer: *std.fs.File.Writer) T {
-    return @as(T, writer.pos) + @as(T, writer.interface.end);
+fn writeEndRecord(
+    writer: *std.Io.Writer,
+    cd_count: u64,
+    cd_offset: u64,
+    cd_size: u64,
+) error{WriteFailed}!void {
+    const hdr: std.zip.EndRecord = .{
+        .signature = std.zip.end_record_sig,
+        .disk_number = 0,
+        .central_directory_disk_number = 0,
+        .record_count_disk = @intCast(cd_count),
+        .record_count_total = @intCast(cd_count),
+        .central_directory_size = @intCast(cd_size),
+        .central_directory_offset = @intCast(cd_offset),
+        .comment_len = 0,
+    };
+    try writer.writeStruct(hdr, .little);
 }
