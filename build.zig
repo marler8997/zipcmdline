@@ -4,8 +4,8 @@ const TestCase = @import("test/cases.zig").TestCase;
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const zip_exe = addExe(b, target, optimize, "zip");
-    const unzip_exe = addExe(b, target, optimize, "unzip");
+    const zip_exe = addExe(b, target, optimize, .zip);
+    const unzip_exe = addExe(b, target, optimize, .unzip);
 
     const host_zip_exe = b.addExecutable(.{
         .name = "zip",
@@ -13,6 +13,11 @@ pub fn build(b: *std.Build) !void {
             .root_source_file = b.path("src/zip.zig"),
             .target = b.graph.host,
             .optimize = .Debug,
+            .imports = &.{
+                .{ .name = "backport", .module = b.createModule(.{
+                    .root_source_file = b.path("backport/std.zig"),
+                }) },
+            },
         }),
     });
 
@@ -29,16 +34,21 @@ fn addExe(
     b: *std.Build,
     target: anytype,
     optimize: anytype,
-    comptime name: []const u8,
+    comptime kind: enum { zip, unzip },
 ) *std.Build.Step.Compile {
     const exe = b.addExecutable(.{
-        .name = name,
+        .name = @tagName(kind),
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/" ++ name ++ ".zig"),
+            .root_source_file = b.path("src/" ++ @tagName(kind) ++ ".zig"),
             .target = target,
             .optimize = optimize,
         }),
     });
+    if (kind == .zip) {
+        exe.root_module.addImport("backport", b.createModule(.{
+            .root_source_file = b.path("backport/std.zig"),
+        }));
+    }
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
@@ -46,7 +56,7 @@ fn addExe(
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
-    const run_step = b.step(name, "Run " ++ name);
+    const run_step = b.step(@tagName(kind), "Run " ++ @tagName(kind));
     run_step.dependOn(&run_cmd.step);
     return exe;
 }
@@ -110,6 +120,11 @@ fn ci(
                 .root_source_file = b.path("src/zip.zig"),
                 .target = target,
                 .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "backport", .module = b.createModule(.{
+                        .root_source_file = b.path("backport/std.zig"),
+                    }) },
+                },
             }),
         });
         const unzip_exe = b.addExecutable(.{

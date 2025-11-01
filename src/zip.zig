@@ -1,6 +1,6 @@
 const builtin = @import("builtin");
 const std = @import("std");
-const deflate = @import("std/deflate.zig");
+// const deflate = @import("std/deflate.zig");
 
 fn oom(e: error{OutOfMemory}) noreturn {
     @panic(@errorName(e));
@@ -203,21 +203,14 @@ fn writeZip(
                 var read_buffer: [4096]u8 = undefined;
                 var reader = Crc32Reader.init(&read_buffer, file);
 
-                try deflate.compress(
-                    .raw,
-                    &reader.interface,
+                var compress_buffer: [std.compress.flate.max_window_len]u8 = undefined;
+                var compressor: @import("backport").compress.flate.Compress = .init(
                     &zipper.writer,
+                    &compress_buffer,
+                    .raw,
                     .{ .level = .best },
                 );
-
-                {
-                    var one_byte: [1]u8 = undefined;
-                    if (reader.interface.readSliceShort(&one_byte)) |len| {
-                        if (len != 0) fatal("deflate compressor didn't read all data", .{});
-                    } else |err| switch (err) {
-                        error.ReadFailed => fatal("deflate compressor didn't read all the data and then we got a read error", .{}),
-                    }
-                }
+                reader.streamRemaining(&compressor.interface);
 
                 compressed_size = zipper.getBytesWritten() - start_offset;
                 crc32 = reader.crc32.final();
