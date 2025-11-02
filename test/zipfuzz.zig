@@ -369,7 +369,7 @@ fn generateDir(
                 const max_size_mb = 10;
                 const max_size = @min(max_size_mb * 1024 * 1024, target_size - current_size.*);
                 const size = random.intRangeAtMost(u64, 0, max_size);
-                std.log.info("generating file: '{f}' ({} bytes)", .{ path_node, size });
+                std.log.info("generating file: '{f}' ({} bytes)", .{ child_path_node, size });
                 try generateFile(random, dir, name, size);
                 current_size.* += size;
             },
