@@ -130,6 +130,7 @@ pub fn main() !void {
         defer zip_file.close();
         var writer = zip_file.writer(&.{});
         for (file_entries.items, 0..) |file, i| {
+            if (file.zip_path[file.zip_path.len - 1] == '/') continue;
             try writer.seekTo(store[i].file_offset);
             const hdr: std.zip.LocalFileHeader = .{
                 .signature = std.zip.local_file_header_sig,
@@ -173,7 +174,21 @@ fn writeZip(
 
         {
             const after_file_header = file_writer.pos + file_writer.interface.buffered().len;
-            std.debug.assert(@sizeOf(std.zip.LocalFileHeader) + file_entry.zip_path.len == after_file_header - file_offset);
+            std.debug.assert(
+                @sizeOf(std.zip.LocalFileHeader) + file_entry.zip_path.len == after_file_header - file_offset,
+            );
+        }
+
+        if (file_entry.zip_path[file_entry.zip_path.len - 1] == '/') {
+            std.debug.assert(file_entry.size == 0);
+            store[i] = .{
+                .file_offset = file_offset,
+                .compression = .store,
+                .uncompressed_size = 0,
+                .crc32 = 0,
+                .compressed_size = 0,
+            };
+            continue;
         }
 
         var file = blk: {
@@ -255,14 +270,20 @@ fn writeZip(
     try file_writer.interface.flush();
 }
 
+const EntryKind = enum { file, directory };
+
 fn joinZipPath(
     allocator: std.mem.Allocator,
     parent: []const u8,
     child: []const u8,
+    kind: EntryKind,
 ) ![]const u8 {
-    if (parent.len == 0)
-        return allocator.dupe(u8, child);
-    return try std.mem.concat(allocator, u8, &.{ parent, "/", child });
+    const sep: []const u8 = if (parent.len == 0) "" else "/";
+    const suffix: []const u8 = switch (kind) {
+        .file => "",
+        .directory => "/",
+    };
+    return try std.mem.concat(allocator, u8, &.{ parent, sep, child, suffix });
 }
 
 fn scanDirectory(
@@ -277,34 +298,50 @@ fn scanDirectory(
     defer dir.close();
     var it = dir.iterate();
     while (try it.next()) |entry| {
-        switch (entry.kind) {
+        const entry_kind: EntryKind = switch (entry.kind) {
+            .directory => .directory,
+            .file => .file,
+            else => |kind| fatal("unsupported file type '{s}'", .{@tagName(kind)}),
+        };
+        const zip_path = try joinZipPath(allocator, relative_path, entry.name, entry_kind);
+        var free_zip_path = true;
+        defer if (free_zip_path) allocator.free(zip_path);
+        if (isBadFilename(zip_path)) std.debug.panic(
+            "unexpected bad filename '{s}'",
+            .{zip_path},
+        );
+
+        switch (entry_kind) {
             .directory => {
-                const sub_directory_path = try joinZipPath(allocator, relative_path, entry.name);
-                defer allocator.free(sub_directory_path);
+                const entry_count_before = file_entries.items.len;
                 try scanDirectory(
                     allocator,
                     file_entries,
                     top_level_dir,
-                    sub_directory_path,
+                    zip_path[0 .. zip_path.len - 1],
                     dir,
                     entry.name,
                 );
+                if (entry_count_before == file_entries.items.len) {
+                    try file_entries.ensureUnusedCapacity(allocator, 1);
+                    free_zip_path = false;
+                    file_entries.appendAssumeCapacity(.{
+                        .dir = top_level_dir,
+                        .zip_path = zip_path,
+                        .size = 0,
+                    });
+                }
             },
             .file => {
-                const file_path = try joinZipPath(allocator, relative_path, entry.name);
-                // don't free, we still need this path
-                if (isBadFilename(file_path)) std.debug.panic(
-                    "unexpected bad filename '{s}'",
-                    .{file_path},
-                );
                 const stat = try dir.statFile(entry.name);
-                try file_entries.append(allocator, .{
+                try file_entries.ensureUnusedCapacity(allocator, 1);
+                free_zip_path = false;
+                file_entries.appendAssumeCapacity(.{
                     .dir = top_level_dir,
-                    .zip_path = file_path,
+                    .zip_path = zip_path,
                     .size = stat.size,
                 });
             },
-            else => |kind| fatal("unsupported file type '{s}'", .{@tagName(kind)}),
         }
     }
 }

@@ -35,21 +35,25 @@ pub fn main() !void {
     switch (test_case) {
         .@"single-file" => try testFiles(allocator, test_path, zip_exe, unzip_exe, &[_]File{
             .{ .sub_path = "test.txt", .data = "Hello, this is a test file!\nWith multiple lines.\n" },
-        }),
+        }, &.{}),
         .@"multiple-files" => try testFiles(allocator, test_path, zip_exe, unzip_exe, &[_]File{
             .{ .sub_path = "file1.txt", .data = "Content of file 1" },
             .{ .sub_path = "file2.txt", .data = "Content of file 2\nWith a second line" },
             .{ .sub_path = "file3.md", .data = "# Markdown file\n\nSome content here." },
-        }),
+        }, &.{}),
         .@"directory-structure" => try testFiles(allocator, test_path, zip_exe, unzip_exe, &[_]File{
             .{ .sub_path = "root.txt", .data = "Root file" },
             .{ .sub_path = "dir1/file1.txt", .data = "File in dir1" },
             .{ .sub_path = "dir1/subdir/deep.txt", .data = "Deep file" },
             .{ .sub_path = "dir2/file2.txt", .data = "File in dir2" },
+        }, &.{
+            "emptydir",
+            "dir3/emptydir",
+            "dir4/subdir/emptydir",
         }),
         .@"empty-file" => try testFiles(allocator, test_path, zip_exe, unzip_exe, &[_]File{
             .{ .sub_path = "empty", .data = "" },
-        }),
+        }, &.{}),
         .@"binary-file" => {
             var binary_data: [5000]u8 = undefined;
 
@@ -61,7 +65,7 @@ pub fn main() !void {
 
             try testFiles(allocator, test_path, zip_exe, unzip_exe, &[_]File{
                 .{ .sub_path = "binary.dat", .data = &binary_data },
-            });
+            }, &.{});
         },
         .@"large-file" => {
             const size = 5 * 1024 * 1024; // 5 MB
@@ -72,7 +76,7 @@ pub fn main() !void {
             }
             try testFiles(allocator, test_path, zip_exe, unzip_exe, &[_]File{
                 .{ .sub_path = "large.bin", .data = large_data },
-            });
+            }, &.{});
         },
         .@"special-chars" => try testFiles(allocator, test_path, zip_exe, unzip_exe, &if (builtin.os.tag == .windows) [_]File{
             .{ .sub_path = "file with spaces.txt", .data = "Spaces in name" },
@@ -83,7 +87,7 @@ pub fn main() !void {
             .{ .sub_path = "file-with-dashes.txt", .data = "Dashes in name" },
             .{ .sub_path = "file_with_underscores.txt", .data = "Underscores in name" },
             .{ .sub_path = "file'with'quotes.txt", .data = "Quotes in name" },
-        }),
+        }, &.{}),
         .@"invalid-zip" => {
             const invalid_path = try std.fs.path.join(allocator, &.{ test_path, "invalid.zip" });
             defer allocator.free(invalid_path);
@@ -119,7 +123,7 @@ pub fn main() !void {
                 .{ .sub_path = "large.dat", .data = pattern_data },
                 // Prime-sized file to avoid alignment
                 .{ .sub_path = "prime.dat", .data = pattern_data[0..5003] },
-            });
+            }, &.{});
         },
     }
 }
@@ -135,6 +139,7 @@ fn testFiles(
     zip_exe: []const u8,
     unzip_exe: []const u8,
     files: []const File,
+    empty_dirs: []const []const u8,
 ) !void {
     const files_path = try std.fs.path.join(allocator, &.{ test_path, "files" });
     defer allocator.free(files_path);
@@ -148,6 +153,10 @@ fn testFiles(
             if (std.fs.path.dirname(file.sub_path)) |dir| try test_files_dir.makePath(dir);
             std.log.debug("creating file '{s}'", .{file.sub_path});
             try test_files_dir.writeFile(.{ .sub_path = file.sub_path, .data = file.data });
+        }
+        for (empty_dirs) |sub_path| {
+            std.log.debug("creating empty directory '{s}'", .{sub_path});
+            try test_files_dir.makePath(sub_path);
         }
     }
     {
@@ -177,6 +186,10 @@ fn testFiles(
             );
             defer allocator.free(unzipped_content);
             try std.testing.expectEqualSlices(u8, file.data, unzipped_content);
+        }
+        for (empty_dirs) |empty_dir| {
+            var dir = try test_files_dir.openDir(empty_dir, .{});
+            dir.close();
         }
     }
 }
