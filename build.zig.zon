@@ -2,6 +2,8 @@
     .name = .zipcmdline,
     .fingerprint = 0xcca72bd3d3a2580c,
     .version = "0.0.0",
+    .zig_version = "0.15.2",
+    // the buffer-stress tests fails on version 0.15.0 on windows
     .minimum_zig_version = "0.15.1",
     .paths = .{
         "build.zig",
