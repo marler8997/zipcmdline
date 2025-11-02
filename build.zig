@@ -66,13 +66,13 @@ fn addExe(
             .root_source_file = b.path("src/" ++ @tagName(kind) ++ ".zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "backport", .module = b.createModule(.{
+                    .root_source_file = b.path("backport/std.zig"),
+                }) },
+            },
         }),
     });
-    if (kind == .zip) {
-        exe.root_module.addImport("backport", b.createModule(.{
-            .root_source_file = b.path("backport/std.zig"),
-        }));
-    }
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);

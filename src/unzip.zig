@@ -84,7 +84,7 @@ pub fn main() !void {
     defer zip_file.close();
     var buffer: [4096]u8 = undefined;
     var reader = zip_file.reader(&buffer);
-    try std.zip.extract(out_dir, &reader, .{
+    try @import("backport").zip.extract(out_dir, &reader, .{
         .allow_backslashes = true,
     });
 }

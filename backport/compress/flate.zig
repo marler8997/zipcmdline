@@ -1,4 +1,4 @@
-const std = @import("std");
+const std = @import("../std.zig");
 
 /// When compressing and decompressing, the provided buffer is used as the
 /// history window, so it must be at least this size.
@@ -12,7 +12,7 @@ pub const Compress = @import("flate/Compress.zig");
 
 /// Inflate is the decoding process that consumes a Deflate bitstream and
 /// produces the original full-size data.
-pub const Decompress = @import("std").compress.flate.Decompress;
+pub const Decompress = @import("flate/Decompress.zig");
 
 /// Container of the deflate bit stream body. Container adds header before
 /// deflate bit stream and footer after. It can bi gzip, zlib or raw (no header,
