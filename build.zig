@@ -41,9 +41,10 @@ pub fn build(b: *std.Build) !void {
         run.addArtifactArg(zip_exe);
         run.addArtifactArg(unzip_exe);
         run.addDirectoryArg(b.path("scratch/fuzz"));
-        run.addFileArg(b.path(b.fmt("seeds/{s}-{s}", .{
+        run.addFileArg(b.path(b.fmt("seeds/{s}-{s}-{s}", .{
             @tagName(builtin.os.tag),
             @tagName(target.result.os.tag),
+            @tagName(optimize),
         })));
         b.step("fuzz", "run the fuzz tester").dependOn(&run.step);
     }
