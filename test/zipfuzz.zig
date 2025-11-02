@@ -80,7 +80,7 @@ fn parseSeedFile(seed_filename: []const u8, file: std.fs.File) !u64 {
         .{seed_filename},
     );
     const content = std.mem.trimRight(u8, read_buf[0..content_len], "\r\n");
-    return std.fmt.parseInt(u16, content, 10) catch errExit(
+    return std.fmt.parseInt(u64, content, 10) catch errExit(
         "seed file content '{s}' is not an integer",
         .{content},
     );
