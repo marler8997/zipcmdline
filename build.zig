@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const TestCase = @import("test/cases.zig").TestCase;
 
@@ -23,6 +24,29 @@ pub fn build(b: *std.Build) !void {
 
     const test_step = b.step("test", "Run all tests");
     addTests(b, zip_exe, unzip_exe, test_step);
+
+    {
+        const zipfuzz_exe = b.addExecutable(.{
+            .name = "zipfuzz",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("test/zipfuzz.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        const install = b.addInstallArtifact(zipfuzz_exe, .{});
+
+        const run = b.addRunArtifact(zipfuzz_exe);
+        run.step.dependOn(&install.step);
+        run.addArtifactArg(zip_exe);
+        run.addArtifactArg(unzip_exe);
+        run.addDirectoryArg(b.path("scratch/fuzz"));
+        run.addFileArg(b.path(b.fmt("seeds/{s}-{s}", .{
+            @tagName(builtin.os.tag),
+            @tagName(target.result.os.tag),
+        })));
+        b.step("fuzz", "run the fuzz tester").dependOn(&run.step);
+    }
 
     const ci_step = b.step("ci", "The build/test step to run on the CI");
     ci_step.dependOn(b.getInstallStep());
