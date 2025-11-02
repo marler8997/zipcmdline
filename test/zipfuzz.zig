@@ -27,6 +27,7 @@ pub fn main() !void {
     };
 
     const initial_seed: u64 = blk: {
+        if (std.fs.path.dirname(seed_filename)) |d| try std.fs.cwd().makePath(d);
         var file = std.fs.cwd().openFile(seed_filename, .{}) catch |err| switch (err) {
             error.FileNotFound => {
                 std.log.info("no seed file '{s}' generating a new one", .{seed_filename});
