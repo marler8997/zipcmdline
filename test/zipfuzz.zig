@@ -341,7 +341,7 @@ fn generateDir(
     while (current_size.* != target_size and entry_count < max_dir_entry_count) : (entry_count += 1) {
         var name_buf: [100]u8 = undefined;
         const name = generateFileName(&name_buf, name_index);
-        name_index += 1;
+        name_index +%= 1;
 
         const Choice = enum {
             file,
