@@ -98,6 +98,11 @@ fn addTests(
             .root_source_file = b.path("test/runner.zig"),
             .target = b.graph.host,
             .optimize = .Debug,
+            .imports = &.{
+                .{ .name = "backport", .module = b.createModule(.{
+                    .root_source_file = b.path("backport/std.zig"),
+                }) },
+            },
         }),
     });
     inline for (std.meta.fields(TestCase)) |field| {
@@ -158,6 +163,11 @@ fn ci(
                 .root_source_file = b.path("src/unzip.zig"),
                 .target = target,
                 .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "backport", .module = b.createModule(.{
+                        .root_source_file = b.path("backport/std.zig"),
+                    }) },
+                },
             }),
         });
         const zip_exe_install = b.addInstallArtifact(zip_exe, .{
