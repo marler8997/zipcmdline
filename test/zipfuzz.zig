@@ -124,7 +124,7 @@ fn testSeed(seed: u64, paths: *const Paths) !void {
 
             if (size > 0) {
                 var total_generated: usize = 0;
-                try generateDir(random, stage_dir, size, &total_generated, 0);
+                try generateDir(random, .{ .root = "stage" }, stage_dir, size, &total_generated, 0);
                 std.debug.assert(total_generated == size);
             }
         }
@@ -167,7 +167,7 @@ const PathNode = union(enum) {
     pub fn format(self: PathNode, writer: *std.Io.Writer) error{WriteFailed}!void {
         switch (self) {
             .root => |path| try writer.print("{s}", .{path}),
-            .component => |c| try writer.print("{f}/{s}'", .{ c.parent, c.name }),
+            .component => |c| try writer.print("{f}/{s}", .{ c.parent, c.name }),
         }
     }
 };
@@ -325,6 +325,7 @@ const max_dir_entry_count = 1000;
 
 fn generateDir(
     random: std.Random,
+    path_node: PathNode,
     dir: std.fs.Dir,
     target_size: usize,
     current_size: *usize,
@@ -359,23 +360,25 @@ fn generateDir(
             },
             else => random.enumValue(Choice),
         };
+        const child_path_node: PathNode = .{ .component = .{
+            .parent = &path_node,
+            .name = name,
+        } };
         switch (choice) {
             .file => {
                 const max_size_mb = 10;
                 const max_size = @min(max_size_mb * 1024 * 1024, target_size - current_size.*);
                 const size = random.intRangeAtMost(u64, 0, max_size);
-                // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-                std.log.info("generating file '{s}' with {} bytes", .{ name, size });
+                std.log.info("generating file: '{f}' ({} bytes)", .{ path_node, size });
                 try generateFile(random, dir, name, size);
                 current_size.* += size;
             },
             .dir => {
-                // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-                std.log.info("generating directory '{s}' depth {}", .{ name, depth + 1 });
+                std.log.info("generating dir : '{f}' (name_index={})", .{ child_path_node, name_index });
                 try dir.makeDir(name);
                 var child_dir = try dir.openDir(name, .{});
                 defer child_dir.close();
-                try generateDir(random, child_dir, target_size, current_size, depth + 1);
+                try generateDir(random, child_path_node, child_dir, target_size, current_size, depth + 1);
             },
             .ret => {
                 std.debug.assert(depth != 0);
@@ -391,7 +394,8 @@ fn generateFileName(name_buf: *[max_name]u8, name_index: u16) []const u8 {
     // Avoiding: null and control characters
     const alphabet =
         "0123456789" ++
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZ" ++
+        // exclude uppercase so all names are unique even if filesystem is case insensitive
+        //"ABCDEFGHIJKLMNOPQRSTUVWXYZ" ++
         "abcdefghijklmnopqrstuvwxyz" ++
         "!#$%&'()+,-.;=@[]^_`{}~ ";
     var remaining = name_index;
