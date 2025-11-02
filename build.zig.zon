@@ -10,5 +10,6 @@
         "build.zig.zon",
         "src",
         "test",
+        "backport",
     },
 }
