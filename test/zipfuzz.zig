@@ -385,7 +385,7 @@ fn generateDir(
     }
 }
 
-fn generateFileName(name_buf: *[max_name]u8, name_index: u16) []u8 {
+fn generateFileName(name_buf: *[max_name]u8, name_index: u16) []const u8 {
     // Valid filename characters for zip files (cross-platform safe)
     // Avoiding: / \ : * ? " < > | (reserved on Windows)
     // Avoiding: null and control characters
@@ -415,7 +415,11 @@ fn generateFileName(name_buf: *[max_name]u8, name_index: u16) []u8 {
         name_buf[pos] = alphabet[value % alphabet.len];
         value /= alphabet.len;
     }
-    return name_buf[0..name_len];
+
+    const name = name_buf[0..name_len];
+    if (std.mem.eql(u8, name, ".")) return "the-reserved-dot-character";
+    if (std.mem.eql(u8, name, "..")) return "the-reserved-dot-dot-character";
+    return name;
 }
 
 fn generateFile(random: std.Random, dir: std.fs.Dir, name: []const u8, size: u64) !void {
