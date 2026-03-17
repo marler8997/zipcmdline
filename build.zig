@@ -8,6 +8,10 @@ pub fn build(b: *std.Build) !void {
     const zip_exe = addExe(b, target, optimize, .zip);
     const unzip_exe = addExe(b, target, optimize, .unzip);
 
+    const backportflate = b.addModule("backportflate", .{
+        .root_source_file = b.path("backport/std.zig"),
+    });
+
     const host_zip_exe = b.addExecutable(.{
         .name = "zip",
         .root_module = b.createModule(.{
@@ -15,9 +19,7 @@ pub fn build(b: *std.Build) !void {
             .target = b.graph.host,
             .optimize = .Debug,
             .imports = &.{
-                .{ .name = "backport", .module = b.createModule(.{
-                    .root_source_file = b.path("backport/std.zig"),
-                }) },
+                .{ .name = "backport", .module = backportflate },
             },
         }),
     });
