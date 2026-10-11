@@ -2,14 +2,17 @@
     .name = .zipcmdline,
     .fingerprint = 0xcca72bd3d3a2580c,
     .version = "0.0.0",
-    .zig_version = "0.15.2",
-    // the buffer-stress tests fails on version 0.15.0 on windows
-    .minimum_zig_version = "0.15.1",
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .staticio = .{
+            .url = "git+https://github.com/marler8997/zig-staticio#58159d4ee3840ec4c32bea736e638fef6c742ed3",
+            .hash = "staticio-0.0.0-ypcguFItAQDHXP_HHw30QTEdVoXzPS4VitXe_C0Zlsl-",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src",
         "test",
-        "backport",
     },
 }

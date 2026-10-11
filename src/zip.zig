@@ -1,16 +1,19 @@
-const builtin = @import("builtin");
 const std = @import("std");
 
-fn oom(e: error{OutOfMemory}) noreturn {
-    @panic(@errorName(e));
-}
+pub const std_options: std.Options = .{
+    .networking = false,
+    .io_vtable = .threaded,
+};
+
+const io = std.Io.Threaded.global_single_threaded.io();
+
 fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
     std.log.err(fmt, args);
     std.process.exit(0xff);
 }
 
 fn usage() !void {
-    var stderr = std.fs.File.stderr().writer(&.{});
+    var stderr = std.Io.File.stderr().writerStreaming(io, &.{});
     const maybe_err: ?error{WriteFailed} = blk: {
         stderr.interface.writeAll(
             "Usage: zip [-options] ZIP_FILE FILES/DIRS..\n",
@@ -21,61 +24,29 @@ fn usage() !void {
     if (maybe_err) |_| return stderr.err.?;
 }
 
-var windows_args_arena = if (builtin.os.tag == .windows)
-    std.heap.ArenaAllocator.init(std.heap.page_allocator)
-else
-    struct {}{};
-pub fn cmdlineArgs() [][*:0]u8 {
-    if (builtin.os.tag == .windows) {
-        const slices = std.process.argsAlloc(windows_args_arena.allocator()) catch |err| switch (err) {
-            error.OutOfMemory => oom(error.OutOfMemory),
-            //error.InvalidCmdLine => @panic("InvalidCmdLine"),
-            error.Overflow => @panic("Overflow while parsing command line"),
-        };
-        const args = windows_args_arena.allocator().alloc([*:0]u8, slices.len - 1) catch |e| oom(e);
-        for (slices[1..], 0..) |slice, i| {
-            args[i] = slice.ptr;
-        }
-        return args;
-    }
-    return std.os.argv.ptr[1..std.os.argv.len];
-}
-
-pub fn main() !void {
-    var arena_instance = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+pub fn main(init: std.process.Init.Minimal) !void {
+    var arena_instance: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
     defer arena_instance.deinit();
     const arena = arena_instance.allocator();
 
-    const cmd_args = blk: {
-        const cmd_args = cmdlineArgs();
-        var arg_index: usize = 0;
-        var non_option_len: usize = 0;
-        while (arg_index < cmd_args.len) : (arg_index += 1) {
-            const arg = std.mem.span(cmd_args[arg_index]);
-            if (!std.mem.startsWith(u8, arg, "-")) {
-                cmd_args[non_option_len] = arg;
-                non_option_len += 1;
-            } else {
-                fatal("unknown cmdline option '{s}'", .{arg});
-            }
-        }
-        break :blk cmd_args[0..non_option_len];
-    };
-
-    if (cmd_args.len < 2) {
-        try usage();
-        std.process.exit(0xff);
-    }
-    const zip_file_arg = std.mem.span(cmd_args[0]);
-    const paths_to_include = cmd_args[1..];
-
+    var zip_file_arg: ?[]const u8 = null;
+    var path_count: usize = 0;
     // expand cmdline arguments to a list of files
     var file_entries: std.ArrayList(FileEntry) = .empty;
-    for (paths_to_include) |path_ptr| {
-        const path = std.mem.span(path_ptr);
+    var arg_it = try init.args.iterateAllocator(arena);
+    _ = arg_it.skip();
+    while (arg_it.next()) |arg| {
+        if (std.mem.startsWith(u8, arg, "-"))
+            fatal("unknown cmdline option '{s}'", .{arg});
+        if (zip_file_arg == null) {
+            zip_file_arg = arg;
+            continue;
+        }
+        const path = arg;
+        path_count += 1;
 
         const kind: union(enum) { file: u64, directory: void } = blk: {
-            const stat = std.fs.cwd().statFile(path) catch |err| switch (err) {
+            const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch |err| switch (err) {
                 error.FileNotFound => fatal("path '{s}' is not found", .{path}),
                 error.IsDir => break :blk .directory,
                 else => |e| return e,
@@ -92,7 +63,7 @@ pub fn main() !void {
                 .door,
                 .event_port,
                 .unknown,
-                => fatal("file '{s}' is an unsupported type {s}", .{ path, @tagName(stat.kind) }),
+                => fatal("file '{s}' is an unsupported type {t}", .{ path, stat.kind }),
             }
         };
         switch (kind) {
@@ -101,7 +72,7 @@ pub fn main() !void {
                 &file_entries,
                 path,
                 "",
-                std.fs.cwd(),
+                std.Io.Dir.cwd(),
                 path,
             ),
             .file => |file_size| {
@@ -116,25 +87,31 @@ pub fn main() !void {
         }
     }
 
+    if (path_count == 0) {
+        try usage();
+        std.process.exit(0xff);
+    }
+    const zip_file_path = zip_file_arg.?;
+
     const store = try arena.alloc(FileStore, file_entries.items.len);
     // no need to free
 
     {
-        const zip_file = std.fs.cwd().createFile(zip_file_arg, .{}) catch |err|
-            fatal("create file '{s}' failed: {s}", .{ zip_file_arg, @errorName(err) });
-        defer zip_file.close();
+        const zip_file = std.Io.Dir.cwd().createFile(io, zip_file_path, .{}) catch |err|
+            fatal("create file '{s}' failed with {t}", .{ zip_file_path, err });
+        defer zip_file.close(io);
         var file_buffer: [9]u8 = undefined;
-        var file_writer = zip_file.writer(&file_buffer);
+        var file_writer = zip_file.writer(io, &file_buffer);
         try writeZip(&file_writer, file_entries.items, store);
         try file_writer.interface.flush();
     }
 
     // go fix up the local file headers
     {
-        const zip_file = std.fs.cwd().openFile(zip_file_arg, .{ .mode = .read_write }) catch |err|
-            fatal("open file '{s}' failed: {s}", .{ zip_file_arg, @errorName(err) });
-        defer zip_file.close();
-        var writer = zip_file.writer(&.{});
+        const zip_file = std.Io.Dir.cwd().openFile(io, zip_file_path, .{ .mode = .read_write }) catch |err|
+            fatal("open file '{s}' failed with {t}", .{ zip_file_path, err });
+        defer zip_file.close(io);
+        var writer = zip_file.writer(io, &.{});
         for (file_entries.items, 0..) |file, i| {
             if (file.zip_path[file.zip_path.len - 1] == '/') continue;
             try writer.seekTo(store[i].file_offset);
@@ -165,7 +142,7 @@ const FileEntry = struct {
 };
 
 fn writeZip(
-    file_writer: *std.fs.File.Writer,
+    file_writer: *std.Io.File.Writer,
     file_entries: []const FileEntry,
     store: []FileStore,
 ) !void {
@@ -199,13 +176,13 @@ fn writeZip(
 
         var file = blk: {
             if (file_entry.dir) |dir| {
-                var entry_dir = try std.fs.cwd().openDir(dir, .{});
-                defer entry_dir.close();
-                break :blk try entry_dir.openFile(file_entry.zip_path, .{});
+                var entry_dir = try std.Io.Dir.cwd().openDir(io, dir, .{});
+                defer entry_dir.close(io);
+                break :blk try entry_dir.openFile(io, file_entry.zip_path, .{});
             }
-            break :blk try std.fs.cwd().openFile(file_entry.zip_path, .{});
+            break :blk try std.Io.Dir.cwd().openFile(io, file_entry.zip_path, .{});
         };
-        defer file.close();
+        defer file.close(io);
 
         var crc32: u32 = undefined;
 
@@ -229,21 +206,29 @@ fn writeZip(
             .deflate => {
                 const start_offset = file_writer.pos + file_writer.interface.buffered().len;
                 var read_buffer: [4096]u8 = undefined;
-                var reader = Crc32Reader.init(&read_buffer, file);
+                var file_reader = file.reader(io, &read_buffer);
+                var reader = file_reader.interface.hashed(std.hash.Crc32.init(), &.{});
 
                 var compress_buffer: [std.compress.flate.max_window_len]u8 = undefined;
-                var compressor: @import("backport").compress.flate.Compress = try .init(
+                var compressor = std.compress.flate.Compress.init(
                     &file_writer.interface,
                     &compress_buffer,
                     .raw,
                     .best,
-                );
-                const written = try reader.interface.streamRemaining(&compressor.writer);
+                ) catch |err| switch (err) {
+                    error.WriteFailed => return file_writer.err.?,
+                };
+                const written = reader.reader.streamRemaining(&compressor.writer) catch |err| switch (err) {
+                    error.ReadFailed => return file_reader.err.?,
+                    error.WriteFailed => return file_writer.err.?,
+                };
                 std.debug.assert(written == file_entry.size);
-                try compressor.writer.flush();
+                compressor.finish() catch |err| switch (err) {
+                    error.WriteFailed => return file_writer.err.?,
+                };
                 const end_offset = file_writer.pos + file_writer.interface.buffered().len;
                 compressed_size = end_offset - start_offset;
-                crc32 = reader.crc32.final();
+                crc32 = reader.hasher.final();
             },
             else => @panic("codebug"),
         }
@@ -297,25 +282,23 @@ fn scanDirectory(
     file_entries: *std.ArrayList(FileEntry),
     top_level_dir: []const u8,
     relative_path: []const u8,
-    parent_dir: std.fs.Dir,
+    parent_dir: std.Io.Dir,
     dir_path: []const u8,
 ) !void {
-    var dir = try parent_dir.openDir(dir_path, .{ .iterate = true });
-    defer dir.close();
+    var dir = try parent_dir.openDir(io, dir_path, .{ .iterate = true });
+    defer dir.close(io);
     var it = dir.iterate();
-    while (try it.next()) |entry| {
+    while (try it.next(io)) |entry| {
         const entry_kind: EntryKind = switch (entry.kind) {
             .directory => .directory,
             .file => .file,
-            else => |kind| fatal("unsupported file type '{s}'", .{@tagName(kind)}),
+            else => |kind| fatal("unsupported file type '{t}'", .{kind}),
         };
         const zip_path = try joinZipPath(allocator, relative_path, entry.name, entry_kind);
         var free_zip_path = true;
         defer if (free_zip_path) allocator.free(zip_path);
-        if (isBadFilename(zip_path)) std.debug.panic(
-            "unexpected bad filename '{s}'",
-            .{zip_path},
-        );
+        if (isBadFilename(zip_path))
+            fatal("filename '{s}' is invalid for zip files", .{zip_path});
 
         switch (entry_kind) {
             .directory => {
@@ -339,7 +322,7 @@ fn scanDirectory(
                 }
             },
             .file => {
-                const stat = try dir.statFile(entry.name);
+                const stat = try dir.statFile(io, entry.name, .{});
                 try file_entries.ensureUnusedCapacity(allocator, 1);
                 free_zip_path = false;
                 file_entries.appendAssumeCapacity(.{
@@ -352,51 +335,8 @@ fn scanDirectory(
     }
 }
 
-const Crc32Reader = struct {
-    interface: std.Io.Reader,
-    file: std.fs.File,
-    crc32: std.hash.Crc32 = std.hash.Crc32.init(),
-
-    pub fn init(buffer: []u8, file: std.fs.File) Crc32Reader {
-        return .{
-            .interface = .{ .vtable = &vtable, .buffer = buffer, .seek = 0, .end = 0 },
-            .file = file,
-            .crc32 = std.hash.Crc32.init(),
-        };
-    }
-
-    const vtable: std.Io.Reader.VTable = .{
-        .stream = stream,
-        .discard = discard,
-        .rebase = rebase,
-    };
-
-    fn stream(r: *std.Io.Reader, w: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
-        const self: *Crc32Reader = @alignCast(@fieldParentPtr("interface", r));
-        const dest = limit.slice(try w.writableSliceGreedy(1));
-        if (dest.len == 0) return 0;
-        const n = self.file.read(dest) catch |err| switch (err) {
-            else => return error.ReadFailed,
-        };
-        if (n == 0) return error.EndOfStream;
-        self.crc32.update(dest[0..n]);
-        w.advance(n);
-        return n;
-    }
-    fn discard(r: *std.Io.Reader, limit: std.Io.Limit) std.Io.Reader.Error!usize {
-        _ = r;
-        _ = limit;
-        @panic("not implemented");
-    }
-    fn rebase(r: *std.Io.Reader, capacity: usize) std.Io.Reader.RebaseError!void {
-        _ = r;
-        _ = capacity;
-        @panic("not implemented");
-    }
-};
-
 fn isBadFilename(filename: []const u8) bool {
-    if (std.mem.indexOfScalar(u8, filename, '\\')) |_|
+    if (std.mem.findScalar(u8, filename, '\\')) |_|
         return true;
 
     if (filename.len == 0 or filename[0] == '/' or filename[0] == '\\')

@@ -2,13 +2,11 @@ pub const std_options: std.Options = .{
     .log_level = .info,
 };
 
-pub fn main() !void {
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const allocator = init.gpa;
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
     if (args.len != 4) {
         std.debug.print("Usage: {s} <test-case> <zip-exe> <unzip-exe>\n", .{args[0]});
@@ -25,23 +23,23 @@ pub fn main() !void {
 
     const test_path = try std.fs.path.join(allocator, &.{ "scratch", @tagName(test_case) });
     defer allocator.free(test_path);
-    try std.fs.cwd().deleteTree(test_path);
-    try std.fs.cwd().makePath(test_path);
+    try std.Io.Dir.cwd().deleteTree(io, test_path);
+    try std.Io.Dir.cwd().createDirPath(io, test_path);
 
     var clean_dir = true;
-    defer if (clean_dir) std.fs.cwd().deleteTree(test_path) catch {};
+    defer if (clean_dir) std.Io.Dir.cwd().deleteTree(io, test_path) catch {};
     errdefer clean_dir = false;
 
     switch (test_case) {
-        .@"single-file" => try testFiles(allocator, test_path, zip_exe, unzip_exe, &[_]File{
+        .@"single-file" => try testFiles(io, allocator, test_path, zip_exe, unzip_exe, &[_]File{
             .{ .sub_path = "test.txt", .data = "Hello, this is a test file!\nWith multiple lines.\n" },
         }, &.{}),
-        .@"multiple-files" => try testFiles(allocator, test_path, zip_exe, unzip_exe, &[_]File{
+        .@"multiple-files" => try testFiles(io, allocator, test_path, zip_exe, unzip_exe, &[_]File{
             .{ .sub_path = "file1.txt", .data = "Content of file 1" },
             .{ .sub_path = "file2.txt", .data = "Content of file 2\nWith a second line" },
             .{ .sub_path = "file3.md", .data = "# Markdown file\n\nSome content here." },
         }, &.{}),
-        .@"directory-structure" => try testFiles(allocator, test_path, zip_exe, unzip_exe, &[_]File{
+        .@"directory-structure" => try testFiles(io, allocator, test_path, zip_exe, unzip_exe, &[_]File{
             .{ .sub_path = "root.txt", .data = "Root file" },
             .{ .sub_path = "dir1/file1.txt", .data = "File in dir1" },
             .{ .sub_path = "dir1/subdir/deep.txt", .data = "Deep file" },
@@ -51,7 +49,7 @@ pub fn main() !void {
             "dir3/emptydir",
             "dir4/subdir/emptydir",
         }),
-        .@"empty-file" => try testFiles(allocator, test_path, zip_exe, unzip_exe, &[_]File{
+        .@"empty-file" => try testFiles(io, allocator, test_path, zip_exe, unzip_exe, &[_]File{
             .{ .sub_path = "empty", .data = "" },
         }, &.{}),
         .@"binary-file" => {
@@ -63,7 +61,7 @@ pub fn main() !void {
                 random.bytes(&binary_data);
             }
 
-            try testFiles(allocator, test_path, zip_exe, unzip_exe, &[_]File{
+            try testFiles(io, allocator, test_path, zip_exe, unzip_exe, &[_]File{
                 .{ .sub_path = "binary.dat", .data = &binary_data },
             }, &.{});
         },
@@ -74,11 +72,11 @@ pub fn main() !void {
             for (large_data, 0..) |*byte, i| {
                 byte.* = @truncate(i % 256);
             }
-            try testFiles(allocator, test_path, zip_exe, unzip_exe, &[_]File{
+            try testFiles(io, allocator, test_path, zip_exe, unzip_exe, &[_]File{
                 .{ .sub_path = "large.bin", .data = large_data },
             }, &.{});
         },
-        .@"special-chars" => try testFiles(allocator, test_path, zip_exe, unzip_exe, &if (builtin.os.tag == .windows) [_]File{
+        .@"special-chars" => try testFiles(io, allocator, test_path, zip_exe, unzip_exe, &if (builtin.os.tag == .windows) [_]File{
             .{ .sub_path = "file with spaces.txt", .data = "Spaces in name" },
             .{ .sub_path = "file-with-dashes.txt", .data = "Dashes in name" },
             .{ .sub_path = "file_with_underscores.txt", .data = "Underscores in name" },
@@ -91,11 +89,11 @@ pub fn main() !void {
         .@"invalid-zip" => {
             const invalid_path = try std.fs.path.join(allocator, &.{ test_path, "invalid.zip" });
             defer allocator.free(invalid_path);
-            try std.fs.cwd().writeFile(.{ .sub_path = invalid_path, .data = "This is not a valid zip file!" });
-            const unzip_result = try runCommand(allocator, &.{ unzip_exe, invalid_path }, .{ .suppress_stderr = true });
+            try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = invalid_path, .data = "This is not a valid zip file!" });
+            const unzip_result = try runCommand(io, allocator, &.{ unzip_exe, invalid_path }, .{ .suppress_stderr = true });
             defer allocator.free(unzip_result.stdout);
             defer allocator.free(unzip_result.stderr);
-            try std.testing.expect(unzip_result.term != .Exited or unzip_result.term.Exited != 0);
+            try std.testing.expect(!unzip_result.term.success());
         },
         .@"buffer-stress" => {
             // Test with specific patterns that could expose buffer corruption
@@ -112,7 +110,7 @@ pub fn main() !void {
             }
 
             // Create multiple files with different sizes to stress the buffer
-            try testFiles(allocator, test_path, zip_exe, unzip_exe, &[_]File{
+            try testFiles(io, allocator, test_path, zip_exe, unzip_exe, &[_]File{
                 // Small file that fits in buffer
                 .{ .sub_path = "small.dat", .data = pattern_data[0..1024] },
                 // File exactly matching buffer size
@@ -134,6 +132,7 @@ const File = struct {
 };
 
 fn testFiles(
+    io: std.Io,
     allocator: std.mem.Allocator,
     test_path: []const u8,
     zip_exe: []const u8,
@@ -147,79 +146,83 @@ fn testFiles(
     defer allocator.free(archive_path);
 
     {
-        var test_files_dir = try std.fs.cwd().makeOpenPath(files_path, .{});
-        defer test_files_dir.close();
+        var test_files_dir = try std.Io.Dir.cwd().createDirPathOpen(io, files_path, .{});
+        defer test_files_dir.close(io);
         for (files) |file| {
-            if (std.fs.path.dirname(file.sub_path)) |dir| try test_files_dir.makePath(dir);
+            if (std.fs.path.dirname(file.sub_path)) |dir| try test_files_dir.createDirPath(io, dir);
             std.log.debug("creating file '{s}'", .{file.sub_path});
-            try test_files_dir.writeFile(.{ .sub_path = file.sub_path, .data = file.data });
+            try test_files_dir.writeFile(io, .{ .sub_path = file.sub_path, .data = file.data });
         }
         for (empty_dirs) |sub_path| {
             std.log.debug("creating empty directory '{s}'", .{sub_path});
-            try test_files_dir.makePath(sub_path);
+            try test_files_dir.createDirPath(io, sub_path);
         }
     }
     {
-        const result = try runCommand(allocator, &.{ zip_exe, archive_path, files_path }, .{});
+        const result = try runCommand(io, allocator, &.{ zip_exe, archive_path, files_path }, .{});
         defer allocator.free(result.stdout);
         defer allocator.free(result.stderr);
-        try std.testing.expect(result.term == .Exited and result.term.Exited == 0);
+        try std.testing.expect(result.term.success());
     }
 
-    try std.fs.cwd().deleteTree(files_path);
+    try std.Io.Dir.cwd().deleteTree(io, files_path);
 
     {
-        const result = try runCommand(allocator, &.{ unzip_exe, "-d", files_path, archive_path }, .{});
+        const result = try runCommand(io, allocator, &.{ unzip_exe, "-d", files_path, archive_path }, .{});
         defer allocator.free(result.stdout);
         defer allocator.free(result.stderr);
-        try std.testing.expect(result.term == .Exited and result.term.Exited == 0);
+        try std.testing.expect(result.term.success());
     }
 
     {
-        var test_files_dir = try std.fs.cwd().openDir(files_path, .{});
-        defer test_files_dir.close();
+        var test_files_dir = try std.Io.Dir.cwd().openDir(io, files_path, .{});
+        defer test_files_dir.close(io);
         for (files) |file| {
             const unzipped_content = try test_files_dir.readFileAlloc(
-                allocator,
+                io,
                 file.sub_path,
-                std.math.maxInt(usize),
+                allocator,
+                .unlimited,
             );
             defer allocator.free(unzipped_content);
             try std.testing.expectEqualSlices(u8, file.data, unzipped_content);
         }
         for (empty_dirs) |empty_dir| {
-            var dir = try test_files_dir.openDir(empty_dir, .{});
-            dir.close();
+            var dir = try test_files_dir.openDir(io, empty_dir, .{});
+            dir.close(io);
         }
     }
 }
 
 fn runCommand(
+    io: std.Io,
     allocator: std.mem.Allocator,
     argv: []const []const u8,
     opt: struct { suppress_stderr: bool = false },
-) !std.process.Child.RunResult {
+) !std.process.RunResult {
     switch (std_options.log_level) {
         .err, .warn, .info => {},
         .debug => {
             var stderr_buf: [1024]u8 = undefined;
-            var stderr = std.fs.File.stderr().writer(&stderr_buf);
-            const bw = &stderr.interface;
-            try bw.print("run:", .{});
-            for (argv) |arg| {
-                try bw.print(" {s}", .{arg});
-            }
-            try bw.writeAll("\n");
-            try bw.flush();
+            var stderr = std.Io.File.stderr().writerStreaming(io, &stderr_buf);
+            const maybe_err: ?error{WriteFailed} = blk: {
+                stderr.interface.writeAll("run:") catch |e| break :blk e;
+                for (argv) |arg| {
+                    stderr.interface.print(" {s}", .{arg}) catch |e| break :blk e;
+                }
+                stderr.interface.writeAll("\n") catch |e| break :blk e;
+                stderr.interface.flush() catch |e| break :blk e;
+                break :blk null;
+            };
+            if (maybe_err) |_| return stderr.err.?;
         },
     }
 
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const result = try std.process.run(allocator, io, .{
         .argv = argv,
     });
     {
-        var stdout = std.fs.File.stdout().writer(&.{});
+        var stdout = std.Io.File.stdout().writerStreaming(io, &.{});
         const maybe_err: ?error{WriteFailed} = blk: {
             stdout.interface.writeAll(result.stdout) catch |e| break :blk e;
             stdout.interface.flush() catch |e| break :blk e;
@@ -228,7 +231,7 @@ fn runCommand(
         if (maybe_err) |_| return stdout.err.?;
     }
     if (!opt.suppress_stderr) {
-        var stderr = std.fs.File.stderr().writer(&.{});
+        var stderr = std.Io.File.stderr().writerStreaming(io, &.{});
         const maybe_err: ?error{WriteFailed} = blk: {
             stderr.interface.writeAll(result.stderr) catch |e| break :blk e;
             stderr.interface.flush() catch |e| break :blk e;

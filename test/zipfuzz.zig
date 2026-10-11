@@ -1,12 +1,12 @@
-pub fn main() !void {
-    var arena_instance: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
-    const arena = arena_instance.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const arena = init.arena.allocator();
 
-    const all_args = try std.process.argsAlloc(arena);
+    const all_args = try init.minimal.args.toSlice(arena);
     // no need to free args
 
     if (all_args.len <= 1) {
-        var stderr = std.fs.File.stderr().writer(&.{});
+        var stderr = std.Io.File.stderr().writerStreaming(io, &.{});
         const maybe_err: ?error{WriteFailed} = blk: {
             stderr.interface.writeAll("Usage: zipfuzz ZIP_EXE UNZIP_EXE TEST_DIRECTORY SEED_FILE\n") catch |e| break :blk e;
             stderr.interface.flush() catch |e| break :blk e;
@@ -33,20 +33,20 @@ pub fn main() !void {
     };
 
     const initial_seed: u64 = blk: {
-        if (std.fs.path.dirname(seed_filename)) |d| try std.fs.cwd().makePath(d);
-        var file = std.fs.cwd().openFile(seed_filename, .{}) catch |err| switch (err) {
+        if (std.fs.path.dirname(seed_filename)) |d| try std.Io.Dir.cwd().createDirPath(io, d);
+        var file = std.Io.Dir.cwd().openFile(io, seed_filename, .{}) catch |err| switch (err) {
             error.FileNotFound => {
                 std.log.info("no seed file '{s}' generating a new one", .{seed_filename});
-                try saveSeedFile(seed_filename, 0);
+                try saveSeedFile(io, seed_filename, 0);
                 break :blk 0;
             },
             else => |e| errExit(
-                "open seed file '{s}' failed with {s}",
-                .{ seed_filename, @errorName(e) },
+                "open seed file '{s}' failed with {t}",
+                .{ seed_filename, e },
             ),
         };
-        defer file.close();
-        const seed = try parseSeedFile(seed_filename, file);
+        defer file.close(io);
+        const seed = try parseSeedFile(io, seed_filename, file);
         std.log.info("restored seed {} from file", .{seed});
         break :blk seed;
     };
@@ -54,9 +54,9 @@ pub fn main() !void {
     var next_seed = initial_seed;
     while (true) {
         std.log.info("testing seed {}", .{next_seed});
-        try testSeed(next_seed, &paths);
+        try testSeed(io, next_seed, &paths);
         next_seed += 1;
-        try saveSeedFile(seed_filename, next_seed);
+        try saveSeedFile(io, seed_filename, next_seed);
     }
 }
 
@@ -69,16 +69,16 @@ const Paths = struct {
     unzipped: []const u8,
 };
 
-fn readSeedFile(seed_filename: []const u8) !u64 {
-    var file = std.fs.cwd().openFile(seed_filename, .{}) catch |e| errExit(
-        "open seed file '{s}' failed with {s}",
-        .{ seed_filename, @errorName(e) },
+fn readSeedFile(io: std.Io, seed_filename: []const u8) !u64 {
+    var file = std.Io.Dir.cwd().openFile(io, seed_filename, .{}) catch |e| errExit(
+        "open seed file '{s}' failed with {t}",
+        .{ seed_filename, e },
     );
-    defer file.close();
-    return parseSeedFile(seed_filename, file);
+    defer file.close(io);
+    return parseSeedFile(io, seed_filename, file);
 }
-fn parseSeedFile(seed_filename: []const u8, file: std.fs.File) !u64 {
-    var reader = file.reader(&.{});
+fn parseSeedFile(io: std.Io, seed_filename: []const u8, file: std.Io.File) !u64 {
+    var reader = file.reader(io, &.{});
     var read_buf: [100]u8 = undefined;
     const content_len = try reader.interface.readSliceShort(&read_buf);
     if (content_len == read_buf.len) errExit(
@@ -92,13 +92,13 @@ fn parseSeedFile(seed_filename: []const u8, file: std.fs.File) !u64 {
     );
 }
 
-fn saveSeedFile(seed_filename: []const u8, seed: u64) !void {
+fn saveSeedFile(io: std.Io, seed_filename: []const u8, seed: u64) !void {
     std.log.info("writing seed {}", .{seed});
     {
-        var file = try std.fs.cwd().createFile(seed_filename, .{});
-        defer file.close();
+        var file = try std.Io.Dir.cwd().createFile(io, seed_filename, .{});
+        defer file.close(io);
         var seed_buf: [100]u8 = undefined;
-        var file_writer = file.writer(&seed_buf);
+        var file_writer = file.writer(io, &seed_buf);
         const maybe_err: ?error{WriteFailed} = blk: {
             file_writer.interface.print("{}\n", .{seed}) catch |e| break :blk e;
             file_writer.interface.flush() catch |e| break :blk e;
@@ -106,20 +106,20 @@ fn saveSeedFile(seed_filename: []const u8, seed: u64) !void {
         };
         if (maybe_err) |_| return file_writer.err.?;
     }
-    std.debug.assert(seed == try readSeedFile(seed_filename));
+    std.debug.assert(seed == try readSeedFile(io, seed_filename));
 }
 
-fn testSeed(seed: u64, paths: *const Paths) !void {
+fn testSeed(io: std.Io, seed: u64, paths: *const Paths) !void {
     {
-        var test_dir = try std.fs.cwd().makeOpenPath(paths.test_root, .{});
-        defer test_dir.close();
+        var test_dir = try std.Io.Dir.cwd().createDirPathOpen(io, paths.test_root, .{});
+        defer test_dir.close(io);
 
-        test_dir.deleteFile("archive.zip") catch |err| switch (err) {
+        test_dir.deleteFile(io, "archive.zip") catch |err| switch (err) {
             error.FileNotFound => {},
             else => |e| return e,
         };
-        try test_dir.deleteTree("stage");
-        try test_dir.deleteTree("unzipped");
+        try test_dir.deleteTree(io, "stage");
+        try test_dir.deleteTree(io, "unzipped");
 
         var prng = std.Random.DefaultPrng.init(seed);
         const random = prng.random();
@@ -129,13 +129,13 @@ fn testSeed(seed: u64, paths: *const Paths) !void {
         std.log.debug("Generating files with seed={d} size={} bytes", .{ seed, size });
 
         {
-            try test_dir.makeDir("stage");
-            var stage_dir = try test_dir.openDir("stage", .{});
-            defer stage_dir.close();
+            try test_dir.createDir(io, "stage", .default_dir);
+            var stage_dir = try test_dir.openDir(io, "stage", .{});
+            defer stage_dir.close(io);
 
             if (size > 0) {
                 var total_generated: usize = 0;
-                try generateDir(random, .{ .root = "stage" }, stage_dir, size, &total_generated, 0);
+                try generateDir(io, random, .{ .root = "stage" }, stage_dir, size, &total_generated, 0);
                 std.debug.assert(total_generated == size);
             }
         }
@@ -144,23 +144,22 @@ fn testSeed(seed: u64, paths: *const Paths) !void {
         defer arena_instance.deinit();
         const scratch = arena_instance.allocator();
         std.log.info("running zip {s} {s}", .{ paths.archive, paths.stage });
-        try reportChildResult(seed, "zip", try std.process.Child.run(.{
-            .allocator = scratch,
+        try reportChildResult(seed, "zip", try std.process.run(scratch, io, .{
             .argv = &.{ paths.zip_exe, paths.archive, paths.stage },
         }));
         std.log.info("running unzip -d {s} {s}", .{ paths.unzipped, paths.archive });
-        try reportChildResult(seed, "unzip", try std.process.Child.run(.{
-            .allocator = scratch,
+        try reportChildResult(seed, "unzip", try std.process.run(scratch, io, .{
             .argv = &.{ paths.unzip_exe, "-d", paths.unzipped, paths.archive },
         }));
     }
 
-    var stage_dir = try std.fs.cwd().openDir(paths.stage, .{ .iterate = true });
-    defer stage_dir.close();
-    var unzipped_dir = try std.fs.cwd().openDir(paths.unzipped, .{ .iterate = true });
-    defer unzipped_dir.close();
+    var stage_dir = try std.Io.Dir.cwd().openDir(io, paths.stage, .{ .iterate = true });
+    defer stage_dir.close(io);
+    var unzipped_dir = try std.Io.Dir.cwd().openDir(io, paths.unzipped, .{ .iterate = true });
+    defer unzipped_dir.close(io);
     std.log.info("verifying files...", .{});
     try verifyDirsMatch(
+        io,
         .{ .root = paths.stage },
         stage_dir,
         .{ .root = paths.unzipped },
@@ -184,25 +183,27 @@ const PathNode = union(enum) {
 };
 
 fn verifyDirsMatch(
+    io: std.Io,
     stage_path_node: PathNode,
-    stage_dir: std.fs.Dir,
+    stage_dir: std.Io.Dir,
     unzipped_path_node: PathNode,
-    unzipped_dir: std.fs.Dir,
+    unzipped_dir: std.Io.Dir,
 ) !void {
     var stage_iter = stage_dir.iterate();
     var unzipped_iter = unzipped_dir.iterate();
 
     // First pass: iterate stage and verify each entry exists in unzipped
-    while (try stage_iter.next()) |entry| switch (entry.kind) {
-        .file => try verifyFile(stage_path_node, stage_dir, unzipped_dir, entry.name),
+    while (try stage_iter.next(io)) |entry| switch (entry.kind) {
+        .file => try verifyFile(io, stage_path_node, stage_dir, unzipped_dir, entry.name),
         .directory => {
-            var stage_subdir = try stage_dir.openDir(entry.name, .{ .iterate = true });
-            defer stage_subdir.close();
-            var unzipped_subdir = unzipped_dir.openDir(entry.name, .{ .iterate = true }) catch |err| switch (err) {
+            var stage_subdir = try stage_dir.openDir(io, entry.name, .{ .iterate = true });
+            defer stage_subdir.close(io);
+            var unzipped_subdir = unzipped_dir.openDir(io, entry.name, .{ .iterate = true }) catch |err| switch (err) {
                 else => |e| return e,
             };
-            defer unzipped_subdir.close();
+            defer unzipped_subdir.close(io);
             try verifyDirsMatch(
+                io,
                 .{ .component = .{
                     .parent = &stage_path_node,
                     .name = entry.name,
@@ -223,9 +224,9 @@ fn verifyDirsMatch(
 
     // Second pass: verify no extra entries in unzipped
     unzipped_iter = unzipped_dir.iterate();
-    while (try unzipped_iter.next()) |entry| switch (entry.kind) {
+    while (try unzipped_iter.next(io)) |entry| switch (entry.kind) {
         .file => {
-            const stat = stage_dir.statFile(entry.name) catch |err| switch (err) {
+            const stat = stage_dir.statFile(io, entry.name, .{}) catch |err| switch (err) {
                 error.FileNotFound => {
                     std.log.err(
                         "file '{f}/{s}' exists in unzipped but not in stage",
@@ -238,10 +239,10 @@ fn verifyDirsMatch(
             std.debug.assert(stat.kind == .file);
         },
         .directory => {
-            var dir = stage_dir.openDir(entry.name, .{}) catch |err| switch (err) {
+            var dir = stage_dir.openDir(io, entry.name, .{}) catch |err| switch (err) {
                 else => |e| return e,
             };
-            dir.close();
+            dir.close(io);
         },
         else => |kind| std.debug.panic(
             "unsupported file kind '{t}' '{f}/{s}'",
@@ -251,26 +252,27 @@ fn verifyDirsMatch(
 }
 
 fn verifyFile(
+    io: std.Io,
     path_node: PathNode,
-    stage_dir: std.fs.Dir,
-    unzipped_dir: std.fs.Dir,
+    stage_dir: std.Io.Dir,
+    unzipped_dir: std.Io.Dir,
     name: []const u8,
 ) !void {
-    const stage_file = try stage_dir.openFile(name, .{});
-    defer stage_file.close();
-    const unzipped_file = try unzipped_dir.openFile(name, .{});
-    defer unzipped_file.close();
+    const stage_file = try stage_dir.openFile(io, name, .{});
+    defer stage_file.close(io);
+    const unzipped_file = try unzipped_dir.openFile(io, name, .{});
+    defer unzipped_file.close(io);
 
-    const stage_stat = try stage_file.stat();
-    const unzipped_stat = try unzipped_file.stat();
+    const stage_stat = try stage_file.stat(io);
+    const unzipped_stat = try unzipped_file.stat(io);
 
     if (stage_stat.size != unzipped_stat.size) errExit(
         "size mismatch for '{f}/{s}': stage has {} bytes, unzipped has {} bytes",
         .{ path_node, name, stage_stat.size, unzipped_stat.size },
     );
 
-    var stage_reader = stage_file.reader(&.{});
-    var unzipped_reader = unzipped_file.reader(&.{});
+    var stage_reader = stage_file.reader(io, &.{});
+    var unzipped_reader = unzipped_file.reader(io, &.{});
 
     {
         const buf_size = 4096;
@@ -308,7 +310,7 @@ fn verifyFile(
     }
 }
 
-fn reportChildResult(seed: u64, name: []const u8, result: std.process.Child.RunResult) !void {
+fn reportChildResult(seed: u64, name: []const u8, result: std.process.RunResult) !void {
     if (result.stdout.len > 0) std.log.info(
         "{s} stdout: {} bytes:\n---\n{s}\n---\n",
         .{ name, result.stdout.len, result.stdout },
@@ -318,13 +320,13 @@ fn reportChildResult(seed: u64, name: []const u8, result: std.process.Child.RunR
         .{ name, result.stderr.len, result.stderr },
     ) else std.log.info("{s} stderr: empty", .{name});
     switch (result.term) {
-        .Exited => |code| if (code != 0) errExit(
+        .exited => |code| if (code != 0) errExit(
             "seed {}: {s} exited with code {}",
             .{ seed, name, code },
         ),
         inline else => |sig, tag| errExit(
-            "seed {}: {s} terminated from {s} ({})",
-            .{ seed, name, @tagName(tag), sig },
+            "seed {}: {s} terminated from {t} ({any})",
+            .{ seed, name, tag, sig },
         ),
     }
     std.log.info("{s} success", .{name});
@@ -335,9 +337,10 @@ const max_name = 100;
 const max_dir_entry_count = 1000;
 
 fn generateDir(
+    io: std.Io,
     random: std.Random,
     path_node: PathNode,
-    dir: std.fs.Dir,
+    dir: std.Io.Dir,
     target_size: usize,
     current_size: *usize,
     depth: u32,
@@ -381,15 +384,15 @@ fn generateDir(
                 const max_size = @min(max_size_mb * 1024 * 1024, target_size - current_size.*);
                 const size = random.intRangeAtMost(u64, 0, max_size);
                 std.log.info("generating file: '{f}' ({} bytes)", .{ child_path_node, size });
-                try generateFile(random, dir, name, size);
+                try generateFile(io, random, dir, name, size);
                 current_size.* += size;
             },
             .dir => {
                 std.log.info("generating dir : '{f}' (name_index={})", .{ child_path_node, name_index });
-                try dir.makeDir(name);
-                var child_dir = try dir.openDir(name, .{});
-                defer child_dir.close();
-                try generateDir(random, child_path_node, child_dir, target_size, current_size, depth + 1);
+                try dir.createDir(io, name, .default_dir);
+                var child_dir = try dir.openDir(io, name, .{});
+                defer child_dir.close(io);
+                try generateDir(io, random, child_path_node, child_dir, target_size, current_size, depth + 1);
             },
             .ret => {
                 std.debug.assert(depth != 0);
@@ -437,10 +440,10 @@ fn generateFileName(name_buf: *[max_name]u8, name_index: u16) []const u8 {
     return name;
 }
 
-fn generateFile(random: std.Random, dir: std.fs.Dir, name: []const u8, size: u64) !void {
-    const file = try dir.createFile(name, .{});
-    defer file.close();
-    var writer = file.writer(&.{});
+fn generateFile(io: std.Io, random: std.Random, dir: std.Io.Dir, name: []const u8, size: u64) !void {
+    const file = try dir.createFile(io, name, .{});
+    defer file.close(io);
+    var writer = file.writer(io, &.{});
     var remaining: u64 = size;
     while (remaining != 0) {
         var write_buf: [4096]u8 = undefined;

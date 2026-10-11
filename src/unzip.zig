@@ -1,16 +1,19 @@
-const builtin = @import("builtin");
 const std = @import("std");
 
-fn oom(e: error{OutOfMemory}) noreturn {
-    @panic(@errorName(e));
-}
+pub const std_options: std.Options = .{
+    .networking = false,
+    .io_vtable = .threaded,
+};
+
+const io = std.Io.Threaded.global_single_threaded.io();
+
 fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
     std.log.err(fmt, args);
     std.process.exit(0xff);
 }
 
 fn usage() !void {
-    var stderr = std.fs.File.stderr().writer(&.{});
+    var stderr = std.Io.File.stderr().writerStreaming(io, &.{});
     const maybe_err: ?error{WriteFailed} = blk: {
         stderr.interface.writeAll("Usage: unzip [-d DIR] ZIP_FILE\n") catch |e| break :blk e;
         stderr.interface.flush() catch |e| break :blk e;
@@ -19,78 +22,56 @@ fn usage() !void {
     if (maybe_err) |_| return stderr.err.?;
 }
 
-var windows_args_arena = if (builtin.os.tag == .windows)
-    std.heap.ArenaAllocator.init(std.heap.page_allocator)
-else
-    struct {}{};
-pub fn cmdlineArgs() [][*:0]u8 {
-    if (builtin.os.tag == .windows) {
-        const slices = std.process.argsAlloc(windows_args_arena.allocator()) catch |err| switch (err) {
-            error.OutOfMemory => oom(error.OutOfMemory),
-            //error.InvalidCmdLine => @panic("InvalidCmdLine"),
-            error.Overflow => @panic("Overflow while parsing command line"),
-        };
-        const args = windows_args_arena.allocator().alloc([*:0]u8, slices.len - 1) catch |e| oom(e);
-        for (slices[1..], 0..) |slice, i| {
-            args[i] = slice.ptr;
-        }
-        return args;
-    }
-    return std.os.argv.ptr[1..std.os.argv.len];
-}
+pub fn main(init: std.process.Init.Minimal) !void {
+    var arena_instance: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer arena_instance.deinit();
 
-pub fn main() !void {
     var cmdline_opt: struct {
-        dir_arg: ?[]u8 = null,
+        dir_arg: ?[]const u8 = null,
     } = .{};
 
-    const cmd_args = blk: {
-        const cmd_args = cmdlineArgs();
-        var arg_index: usize = 0;
-        var non_option_len: usize = 0;
-        while (arg_index < cmd_args.len) : (arg_index += 1) {
-            const arg = std.mem.span(cmd_args[arg_index]);
-            if (!std.mem.startsWith(u8, arg, "-")) {
-                cmd_args[non_option_len] = arg;
-                non_option_len += 1;
-            } else if (std.mem.eql(u8, arg, "-d")) {
-                arg_index += 1;
-                if (arg_index == cmd_args.len)
-                    fatal("option '{s}' requires an argument", .{arg});
-                cmdline_opt.dir_arg = std.mem.span(cmd_args[arg_index]);
-            } else {
-                fatal("unknown cmdline option '{s}'", .{arg});
-            }
+    var zip_file_arg: ?[]const u8 = null;
+    var non_option_count: usize = 0;
+    var arg_it = try init.args.iterateAllocator(arena_instance.allocator());
+    _ = arg_it.skip();
+    while (arg_it.next()) |arg| {
+        if (!std.mem.startsWith(u8, arg, "-")) {
+            if (zip_file_arg == null) zip_file_arg = arg;
+            non_option_count += 1;
+        } else if (std.mem.eql(u8, arg, "-d")) {
+            cmdline_opt.dir_arg = arg_it.next() orelse
+                fatal("option '{s}' requires an argument", .{arg});
+        } else {
+            fatal("unknown cmdline option '{s}'", .{arg});
         }
-        break :blk cmd_args[0..non_option_len];
-    };
+    }
 
-    if (cmd_args.len != 1) {
+    if (non_option_count != 1) {
         try usage();
         std.process.exit(0xff);
     }
-    const zip_file_arg = std.mem.span(cmd_args[0]);
+    const zip_file_path = zip_file_arg.?;
 
     var out_dir = blk: {
         if (cmdline_opt.dir_arg) |dir| {
-            break :blk std.fs.cwd().openDir(dir, .{}) catch |err| switch (err) {
+            break :blk std.Io.Dir.cwd().openDir(io, dir, .{}) catch |err| switch (err) {
                 error.FileNotFound => {
-                    try std.fs.cwd().makePath(dir);
-                    break :blk try std.fs.cwd().openDir(dir, .{});
+                    try std.Io.Dir.cwd().createDirPath(io, dir);
+                    break :blk try std.Io.Dir.cwd().openDir(io, dir, .{});
                 },
-                else => fatal("failed to open output directory '{s}' with {s}", .{ dir, @errorName(err) }),
+                else => fatal("failed to open output directory '{s}' with {t}", .{ dir, err }),
             };
         }
-        break :blk std.fs.cwd();
+        break :blk std.Io.Dir.cwd();
     };
-    defer if (cmdline_opt.dir_arg) |_| out_dir.close();
+    defer if (cmdline_opt.dir_arg) |_| out_dir.close(io);
 
-    const zip_file = std.fs.cwd().openFile(zip_file_arg, .{}) catch |err|
-        fatal("open '{s}' failed: {s}", .{ zip_file_arg, @errorName(err) });
-    defer zip_file.close();
+    const zip_file = std.Io.Dir.cwd().openFile(io, zip_file_path, .{}) catch |err|
+        fatal("open '{s}' failed with {t}", .{ zip_file_path, err });
+    defer zip_file.close(io);
     var buffer: [4096]u8 = undefined;
-    var reader = zip_file.reader(&buffer);
-    try @import("backport").zip.extract(out_dir, &reader, .{
+    var reader = zip_file.reader(io, &buffer);
+    try std.zip.extract(out_dir, &reader, .{
         .allow_backslashes = true,
     });
 }
