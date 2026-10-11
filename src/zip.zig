@@ -10,9 +10,15 @@ fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
 }
 
 fn usage() !void {
-    try std.fs.File.stderr().writeAll(
-        "Usage: zip [-options] ZIP_FILE FILES/DIRS..\n",
-    );
+    var stderr = std.fs.File.stderr().writer(&.{});
+    const maybe_err: ?error{WriteFailed} = blk: {
+        stderr.interface.writeAll(
+            "Usage: zip [-options] ZIP_FILE FILES/DIRS..\n",
+        ) catch |e| break :blk e;
+        stderr.interface.flush() catch |e| break :blk e;
+        break :blk null;
+    };
+    if (maybe_err) |_| return stderr.err.?;
 }
 
 var windows_args_arena = if (builtin.os.tag == .windows)
@@ -64,7 +70,7 @@ pub fn main() !void {
     const paths_to_include = cmd_args[1..];
 
     // expand cmdline arguments to a list of files
-    var file_entries: std.ArrayListUnmanaged(FileEntry) = .{};
+    var file_entries: std.ArrayList(FileEntry) = .empty;
     for (paths_to_include) |path_ptr| {
         const path = std.mem.span(path_ptr);
 
@@ -288,7 +294,7 @@ fn joinZipPath(
 
 fn scanDirectory(
     allocator: std.mem.Allocator,
-    file_entries: *std.ArrayListUnmanaged(FileEntry),
+    file_entries: *std.ArrayList(FileEntry),
     top_level_dir: []const u8,
     relative_path: []const u8,
     parent_dir: std.fs.Dir,

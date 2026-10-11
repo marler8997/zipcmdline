@@ -10,7 +10,13 @@ fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
 }
 
 fn usage() !void {
-    try std.fs.File.stderr().writeAll("Usage: unzip [-d DIR] ZIP_FILE\n");
+    var stderr = std.fs.File.stderr().writer(&.{});
+    const maybe_err: ?error{WriteFailed} = blk: {
+        stderr.interface.writeAll("Usage: unzip [-d DIR] ZIP_FILE\n") catch |e| break :blk e;
+        stderr.interface.flush() catch |e| break :blk e;
+        break :blk null;
+    };
+    if (maybe_err) |_| return stderr.err.?;
 }
 
 var windows_args_arena = if (builtin.os.tag == .windows)

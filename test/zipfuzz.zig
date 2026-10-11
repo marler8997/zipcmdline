@@ -6,7 +6,13 @@ pub fn main() !void {
     // no need to free args
 
     if (all_args.len <= 1) {
-        try std.fs.File.stderr().writeAll("Usage: zipfuzz ZIP_EXE UNZIP_EXE TEST_DIRECTORY SEED_FILE\n");
+        var stderr = std.fs.File.stderr().writer(&.{});
+        const maybe_err: ?error{WriteFailed} = blk: {
+            stderr.interface.writeAll("Usage: zipfuzz ZIP_EXE UNZIP_EXE TEST_DIRECTORY SEED_FILE\n") catch |e| break :blk e;
+            stderr.interface.flush() catch |e| break :blk e;
+            break :blk null;
+        };
+        if (maybe_err) |_| return stderr.err.?;
         std.process.exit(0xff);
     }
 
@@ -79,7 +85,7 @@ fn parseSeedFile(seed_filename: []const u8, file: std.fs.File) !u64 {
         "seed file '{s}' is too long",
         .{seed_filename},
     );
-    const content = std.mem.trimRight(u8, read_buf[0..content_len], "\r\n");
+    const content = std.mem.trimEnd(u8, read_buf[0..content_len], "\r\n");
     return std.fmt.parseInt(u64, content, 10) catch errExit(
         "seed file content '{s}' is not an integer",
         .{content},
@@ -92,8 +98,13 @@ fn saveSeedFile(seed_filename: []const u8, seed: u64) !void {
         var file = try std.fs.cwd().createFile(seed_filename, .{});
         defer file.close();
         var seed_buf: [100]u8 = undefined;
-        const seed_str = std.fmt.bufPrint(&seed_buf, "{}\n", .{seed}) catch unreachable;
-        try file.writeAll(seed_str);
+        var file_writer = file.writer(&seed_buf);
+        const maybe_err: ?error{WriteFailed} = blk: {
+            file_writer.interface.print("{}\n", .{seed}) catch |e| break :blk e;
+            file_writer.interface.flush() catch |e| break :blk e;
+            break :blk null;
+        };
+        if (maybe_err) |_| return file_writer.err.?;
     }
     std.debug.assert(seed == try readSeedFile(seed_filename));
 }

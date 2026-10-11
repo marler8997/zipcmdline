@@ -107,7 +107,7 @@ fn addTests(
             },
         }),
     });
-    inline for (std.meta.fields(TestCase)) |field| {
+    inline for (@typeInfo(TestCase).@"enum".fields) |field| {
         const case: TestCase = @enumFromInt(field.value);
         const run = b.addRunArtifact(test_runner);
         run.setName(@tagName(case));
@@ -213,10 +213,10 @@ fn makeCiArchiveStep(
         zip.addArg("zip.pdb");
         zip.addArg("unzip.exe");
         zip.addArg("unzip.pdb");
-        zip.cwd = .{ .cwd_relative = b.getInstallPath(
+        zip.setCwd(.{ .cwd_relative = b.getInstallPath(
             zip_exe_install.dest_dir.?,
             ".",
-        ) };
+        ) });
         zip.step.dependOn(&zip_exe_install.step);
         zip.step.dependOn(&unzip_exe_install.step);
         return &zip.step;
@@ -233,10 +233,10 @@ fn makeCiArchiveStep(
         "zip",
         "unzip",
     });
-    tar.cwd = .{ .cwd_relative = b.getInstallPath(
+    tar.setCwd(.{ .cwd_relative = b.getInstallPath(
         zip_exe_install.dest_dir.?,
         ".",
-    ) };
+    ) });
     tar.step.dependOn(&zip_exe_install.step);
     tar.step.dependOn(&unzip_exe_install.step);
     return &tar.step;

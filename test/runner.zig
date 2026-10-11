@@ -3,7 +3,7 @@ pub const std_options: std.Options = .{
 };
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -218,9 +218,23 @@ fn runCommand(
         .allocator = allocator,
         .argv = argv,
     });
-    try std.fs.File.stdout().writeAll(result.stdout);
+    {
+        var stdout = std.fs.File.stdout().writer(&.{});
+        const maybe_err: ?error{WriteFailed} = blk: {
+            stdout.interface.writeAll(result.stdout) catch |e| break :blk e;
+            stdout.interface.flush() catch |e| break :blk e;
+            break :blk null;
+        };
+        if (maybe_err) |_| return stdout.err.?;
+    }
     if (!opt.suppress_stderr) {
-        try std.fs.File.stderr().writeAll(result.stderr);
+        var stderr = std.fs.File.stderr().writer(&.{});
+        const maybe_err: ?error{WriteFailed} = blk: {
+            stderr.interface.writeAll(result.stderr) catch |e| break :blk e;
+            stderr.interface.flush() catch |e| break :blk e;
+            break :blk null;
+        };
+        if (maybe_err) |_| return stderr.err.?;
     }
     return result;
 }
