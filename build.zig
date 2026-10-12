@@ -5,7 +5,11 @@ const TestCase = @import("test/cases.zig").TestCase;
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const patched_std = b.dependency("staticio", .{}).module("std");
+    const patched_std = b.dependency("patch", .{
+        .std_patches = &[_]std.Build.LazyPath{
+            b.dependency("staticio", .{}).namedLazyPath("std.patch"),
+        },
+    }).module("std");
     const zip_exe = addExe(b, patched_std, target, optimize, .zip);
     const unzip_exe = addExe(b, patched_std, target, optimize, .unzip);
 

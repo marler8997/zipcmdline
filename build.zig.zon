@@ -4,9 +4,13 @@
     .version = "0.0.0",
     .minimum_zig_version = "0.17.0",
     .dependencies = .{
+        .patch = .{
+            .url = "git+https://github.com/marler8997/zig-patch#c3ad78b305ba03bcd645c0bac004d1719407c6b8",
+            .hash = "patch-0.0.0-WCKjsxixAADfwXQv4Vugyxo6PFbDFuuyM7ly3OiqZRYR",
+        },
         .staticio = .{
-            .url = "git+https://github.com/marler8997/zig-staticio#58159d4ee3840ec4c32bea736e638fef6c742ed3",
-            .hash = "staticio-0.0.0-ypcguFItAQDHXP_HHw30QTEdVoXzPS4VitXe_C0Zlsl-",
+            .url = "git+https://github.com/marler8997/zig-staticio#757f0f82346dc72821a314716141767f23c93e2d",
+            .hash = "staticio-0.0.0-ypcguFqyAABuHOp5fr9CJs39UchssOB_SEa0TC-p8gwf",
         },
     },
     .paths = .{
