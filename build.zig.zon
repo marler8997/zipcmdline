@@ -9,8 +9,8 @@
             .hash = "patch-0.0.0-WCKjsxixAADfwXQv4Vugyxo6PFbDFuuyM7ly3OiqZRYR",
         },
         .staticio = .{
-            .url = "git+https://github.com/marler8997/zig-staticio#757f0f82346dc72821a314716141767f23c93e2d",
-            .hash = "staticio-0.0.0-ypcguFqyAABuHOp5fr9CJs39UchssOB_SEa0TC-p8gwf",
+            .url = "git+https://github.com/marler8997/zig-staticio#1ef1b4374703b72beb44e494cc9d03d7944567e3",
+            .hash = "staticio-0.0.0-ypcguAK1AADvFgpnMy2lYwxPrSFYq-Z4rw11Spk142R7",
         },
     },
     .paths = .{
